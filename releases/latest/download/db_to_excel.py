@@ -7,10 +7,8 @@ import os
 import sys
 import platform
 import subprocess
-import importlib
 import logging
 import traceback
-import threading
 import time
 from datetime import datetime
 from typing import Optional
@@ -65,13 +63,6 @@ DEFAULT_PORTS = {
 
 DB_CONNECT_TIMEOUT = 5
 
-DRIVER_MODULES = {
-    "mysql": "pymysql",
-    "postgresql": "psycopg2",
-    "mssql": "pyodbc",
-    "oracle": "oracledb",
-}
-
 HEADERS = ["Field", "Type", "Null", "Key", "Default", "Extra"]
 
 
@@ -89,26 +80,6 @@ def open_file_location(filepath: str) -> None:
             subprocess.Popen(["xdg-open", os.path.dirname(filepath)])
     except Exception as e:
         logger.error("Failed to open file location: %s", e)
-
-
-def load_driver_module(driver: str):
-    module_name = DRIVER_MODULES.get(driver)
-    if not module_name:
-        raise ValueError(f"Unsupported driver: {driver}")
-    return importlib.import_module(module_name)
-
-
-def warm_driver_module(driver: str) -> None:
-    if driver not in DRIVER_MODULES:
-        return
-
-    def _load() -> None:
-        try:
-            load_driver_module(driver)
-        except Exception as exc:
-            logger.debug("Driver warmup failed for %s: %s", driver, exc)
-
-    threading.Thread(target=_load, daemon=True).start()
 
 
 # ── Database Functions ──────────────────────────────────────────────
@@ -148,61 +119,77 @@ def build_connection(driver: str, on_phase=None, **params):
         driver, host, port, user, database,
     )
 
-    if on_phase:
-        on_phase("Loading database driver...")
-    t0 = time.perf_counter()
-    try:
-        module = load_driver_module(driver)
-    except ImportError as exc:
-        if driver == "mssql":
-            raise ImportError(
-                "SQL Server driver not available.\n"
-                "Install Microsoft ODBC Driver 17 for SQL Server."
-            ) from exc
-        raise
-    logger.info(
-        "Driver import for %s took %.2fs",
-        driver,
-        time.perf_counter() - t0,
-    )
-
-    if on_phase:
-        on_phase("Opening database connection...")
-
     if driver == "mysql":
+        if on_phase:
+            on_phase("Loading database driver...")
         t0 = time.perf_counter()
-        conn = module.connect(
+        import pymysql
+        logger.info("Driver import for mysql took %.2fs", time.perf_counter() - t0)
+
+        if on_phase:
+            on_phase("Opening database connection...")
+        t0 = time.perf_counter()
+        conn = pymysql.connect(
             host=host, port=int(port), user=user, password=password,
             database=database, charset="utf8mb4", connect_timeout=DB_CONNECT_TIMEOUT,
-            read_timeout=DB_CONNECT_TIMEOUT, write_timeout=DB_CONNECT_TIMEOUT,
         )
         logger.info("MySQL connect/auth took %.2fs", time.perf_counter() - t0)
     elif driver == "postgresql":
+        if on_phase:
+            on_phase("Loading database driver...")
         t0 = time.perf_counter()
-        conn = module.connect(
+        import psycopg2
+        logger.info(
+            "Driver import for postgresql took %.2fs",
+            time.perf_counter() - t0,
+        )
+
+        if on_phase:
+            on_phase("Opening database connection...")
+        t0 = time.perf_counter()
+        conn = psycopg2.connect(
             host=host, port=port, user=user, password=password,
             dbname=database, connect_timeout=DB_CONNECT_TIMEOUT,
         )
         logger.info("PostgreSQL connect/auth took %.2fs", time.perf_counter() - t0)
     elif driver == "mssql":
+        if on_phase:
+            on_phase("Loading database driver...")
+        t0 = time.perf_counter()
+        try:
+            import pyodbc
+        except ImportError as exc:
+            raise ImportError(
+                "SQL Server driver not available.\n"
+                "Install Microsoft ODBC Driver 17 for SQL Server."
+            ) from exc
+        logger.info("Driver import for mssql took %.2fs", time.perf_counter() - t0)
+
         conn_str = (
             "DRIVER={ODBC Driver 17 for SQL Server};"
             f"SERVER={host},{port};DATABASE={database};"
-            f"UID={user};PWD={password};"
-            "TrustServerCertificate=yes;"
-            f"LoginTimeout={DB_CONNECT_TIMEOUT};"
-            f"Connection Timeout={DB_CONNECT_TIMEOUT};"
+            f"UID={user};PWD={password}"
         )
+        if on_phase:
+            on_phase("Opening database connection...")
         t0 = time.perf_counter()
-        conn = module.connect(conn_str, timeout=DB_CONNECT_TIMEOUT)
+        conn = pyodbc.connect(conn_str, timeout=DB_CONNECT_TIMEOUT)
         logger.info("MSSQL connect/auth took %.2fs", time.perf_counter() - t0)
     elif driver == "oracle":
+        if on_phase:
+            on_phase("Loading database driver...")
         t0 = time.perf_counter()
-        dsn = module.makedsn(host, int(port), service_name=database)
-        logger.info("Oracle DSN build took %.2fs", time.perf_counter() - t0)
+        import oracledb
+        logger.info("Driver import for oracle took %.2fs", time.perf_counter() - t0)
 
         t0 = time.perf_counter()
-        conn = module.connect(user=user, password=password, dsn=dsn)
+        dsn = oracledb.makedsn(host, port, service_name=database)
+        logger.info("Oracle DSN build took %.2fs", time.perf_counter() - t0)
+
+        if on_phase:
+            on_phase("Opening database connection...")
+        t0 = time.perf_counter()
+        conn = oracledb.connect(user=user, password=password, dsn=dsn)
         logger.info("Oracle connect/auth took %.2fs", time.perf_counter() - t0)
     else:
         raise ValueError(f"Unsupported driver: {driver}")
@@ -464,7 +451,6 @@ class MainScreen(Screen):
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
         self.app.driver = event.pressed.id
-        warm_driver_module(event.pressed.id)
         self.query_one("#btn-next", Button).disabled = False
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
