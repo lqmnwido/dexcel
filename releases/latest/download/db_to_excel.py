@@ -11,6 +11,7 @@ import importlib
 import logging
 import traceback
 import threading
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -112,14 +113,28 @@ def warm_driver_module(driver: str) -> None:
 
 # ── Database Functions ──────────────────────────────────────────────
 
-def build_connection(driver: str, **params):
+def build_connection(driver: str, on_phase=None, **params):
+    start_all = time.perf_counter()
+
     if driver == "sqlite":
         path = params["path"]
         if not os.path.isfile(path):
             raise FileNotFoundError(f"SQLite file not found: {path}")
+
+        if on_phase:
+            on_phase("Loading database driver...")
         import sqlite3
+
+        if on_phase:
+            on_phase("Opening database connection...")
+        t0 = time.perf_counter()
         conn = sqlite3.connect(path)
+        logger.info("SQLite connect took %.2fs", time.perf_counter() - t0)
         db_name = os.path.splitext(os.path.basename(path))[0]
+        logger.info(
+            "Total build_connection took %.2fs",
+            time.perf_counter() - start_all,
+        )
         return conn, db_name
 
     host = params.get("host", "127.0.0.1")
@@ -133,39 +148,69 @@ def build_connection(driver: str, **params):
         driver, host, port, user, database,
     )
 
-    if driver == "mysql":
-        pymysql = load_driver_module(driver)
-        conn = pymysql.connect(
-            host=host, port=int(port), user=user, password=password,
-            database=database, charset="utf8mb4", connect_timeout=DB_CONNECT_TIMEOUT,
-        )
-    elif driver == "postgresql":
-        psycopg2 = load_driver_module(driver)
-        conn = psycopg2.connect(
-            host=host, port=port, user=user, password=password,
-            dbname=database, connect_timeout=DB_CONNECT_TIMEOUT,
-        )
-    elif driver == "mssql":
-        try:
-            pyodbc = load_driver_module(driver)
-        except ImportError:
+    if on_phase:
+        on_phase("Loading database driver...")
+    t0 = time.perf_counter()
+    try:
+        module = load_driver_module(driver)
+    except ImportError as exc:
+        if driver == "mssql":
             raise ImportError(
                 "SQL Server driver not available.\n"
                 "Install Microsoft ODBC Driver 17 for SQL Server."
-            )
+            ) from exc
+        raise
+    logger.info(
+        "Driver import for %s took %.2fs",
+        driver,
+        time.perf_counter() - t0,
+    )
+
+    if on_phase:
+        on_phase("Opening database connection...")
+
+    if driver == "mysql":
+        t0 = time.perf_counter()
+        conn = module.connect(
+            host=host, port=int(port), user=user, password=password,
+            database=database, charset="utf8mb4", connect_timeout=DB_CONNECT_TIMEOUT,
+            read_timeout=DB_CONNECT_TIMEOUT, write_timeout=DB_CONNECT_TIMEOUT,
+        )
+        logger.info("MySQL connect/auth took %.2fs", time.perf_counter() - t0)
+    elif driver == "postgresql":
+        t0 = time.perf_counter()
+        conn = module.connect(
+            host=host, port=port, user=user, password=password,
+            dbname=database, connect_timeout=DB_CONNECT_TIMEOUT,
+        )
+        logger.info("PostgreSQL connect/auth took %.2fs", time.perf_counter() - t0)
+    elif driver == "mssql":
         conn_str = (
             "DRIVER={ODBC Driver 17 for SQL Server};"
             f"SERVER={host},{port};DATABASE={database};"
-            f"UID={user};PWD={password}"
+            f"UID={user};PWD={password};"
+            "TrustServerCertificate=yes;"
+            f"LoginTimeout={DB_CONNECT_TIMEOUT};"
+            f"Connection Timeout={DB_CONNECT_TIMEOUT};"
         )
-        conn = pyodbc.connect(conn_str, timeout=DB_CONNECT_TIMEOUT)
+        t0 = time.perf_counter()
+        conn = module.connect(conn_str, timeout=DB_CONNECT_TIMEOUT)
+        logger.info("MSSQL connect/auth took %.2fs", time.perf_counter() - t0)
     elif driver == "oracle":
-        oracledb = load_driver_module(driver)
-        dsn = oracledb.makedsn(host, port, service_name=database)
-        conn = oracledb.connect(user=user, password=password, dsn=dsn)
+        t0 = time.perf_counter()
+        dsn = module.makedsn(host, int(port), service_name=database)
+        logger.info("Oracle DSN build took %.2fs", time.perf_counter() - t0)
+
+        t0 = time.perf_counter()
+        conn = module.connect(user=user, password=password, dsn=dsn)
+        logger.info("Oracle connect/auth took %.2fs", time.perf_counter() - t0)
     else:
         raise ValueError(f"Unsupported driver: {driver}")
 
+    logger.info(
+        "Total build_connection took %.2fs",
+        time.perf_counter() - start_all,
+    )
     return conn, database
 
 
@@ -308,7 +353,7 @@ def get_table_description(conn, driver: str, table: str):
 
 
 def export_to_excel(conn, driver: str, tables, output_path: str,
-                    on_progress=None) -> None:
+                    on_progress=None, on_phase=None) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
     from openpyxl.utils import get_column_letter
@@ -332,8 +377,15 @@ def export_to_excel(conn, driver: str, tables, output_path: str,
             on_progress(f"Describing table: {table}")
 
         try:
+            t0 = time.perf_counter()
             rows = get_table_description(conn, driver, table)
+            logger.info(
+                "Description for table %s took %.2fs",
+                table,
+                time.perf_counter() - t0,
+            )
         except Exception as e:
+            logger.exception("Could not describe table %s", table)
             ws.merge_cells(
                 start_row=row_num, start_column=1,
                 end_row=row_num, end_column=len(HEADERS),
@@ -387,7 +439,11 @@ def export_to_excel(conn, driver: str, tables, output_path: str,
     ws.column_dimensions["E"].width = 25
     ws.column_dimensions["F"].width = 25
 
+    if on_phase:
+        on_phase("Saving Excel file...")
+    t0 = time.perf_counter()
     wb.save(output_path)
+    logger.info("Excel save took %.2fs", time.perf_counter() - t0)
     if on_progress:
         on_progress(f"Saved to: {output_path}")
 
@@ -511,7 +567,7 @@ class ExportScreen(Screen):
                 yield Button("Exit", variant="primary", id="exit", disabled=True)
 
     def on_mount(self) -> None:
-        self.query_one("#export-status", Label).update("Connecting to database...")
+        self.query_one("#export-status", Label).update("Preparing export...")
         self.call_after_refresh(self.run_export)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -532,17 +588,27 @@ class ExportScreen(Screen):
             self.call_from_thread(self._update_status, msg)
 
         try:
-            _status("Connecting to database...")
-            _log("Connecting to database...")
-            conn, db_name = build_connection(self.app.driver, **self.app.db_params)
+            _log(f"Diagnostic log: {LOG_FILE}")
+
+            def connection_phase(msg: str) -> None:
+                _status(msg)
+                _log(msg)
+
+            conn, db_name = build_connection(
+                self.app.driver,
+                on_phase=connection_phase,
+                **self.app.db_params,
+            )
             self.app.conn = conn
             self.app.db_name = db_name
             _status("Connection established.")
             _log("Connected successfully.")
 
-            _status("Listing tables...")
-            _log("Listing tables...")
+            _status("Reading table list...")
+            _log("Reading table list...")
+            t0 = time.perf_counter()
             tables = list_tables(conn, self.app.driver)
+            logger.info("list_tables took %.2fs", time.perf_counter() - t0)
             _log(f"Found {len(tables)} table(s).")
 
             if not tables:
@@ -557,13 +623,25 @@ class ExportScreen(Screen):
             if os.path.exists(output_path):
                 _log("File exists -- will overwrite")
 
-            _status("Writing Excel file...")
+            _status("Reading table descriptions...")
             _log(f"Output: {output_path}")
 
             def on_progress(msg: str) -> None:
                 self.call_from_thread(self._append_log, f"  {msg}")
 
-            export_to_excel(conn, self.app.driver, tables, output_path, on_progress)
+            export_started = time.perf_counter()
+            export_to_excel(
+                conn,
+                self.app.driver,
+                tables,
+                output_path,
+                on_progress,
+                on_phase=_status,
+            )
+            logger.info(
+                "Total schema export took %.2fs",
+                time.perf_counter() - export_started,
+            )
 
             _status("Export complete.")
             _log("Export complete!")
