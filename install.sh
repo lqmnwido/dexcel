@@ -10,7 +10,7 @@
 
 set -uo pipefail
 
-RELEASE_BASE_URL="${DEXCEL_RELEASE_URL:-https://github.com/luqmanhafiz81/dexcel/releases/latest/download}"
+RELEASE_BASE_URL="${DEXCEL_RELEASE_URL:-https://dexcel.kohich.site/releases/latest/download}"
 MIN_PYTHON_MINOR=8
 
 INSTALL_DIR="$HOME/.dexcel"

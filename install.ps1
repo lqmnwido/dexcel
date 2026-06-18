@@ -1,7 +1,7 @@
 # install.ps1 — Dexcel installer for Windows
 #
 # Install:
-#   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/luqmanhafiz81/dexcel/main/install.ps1 | iex"
+#   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/lqmnwido/dexcel/main/install.ps1 | iex"
 #
 # Run after install:
 #   dexcel
@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 $ReleaseBaseUrl = $env:DEXCEL_RELEASE_URL
 
 if (-not $ReleaseBaseUrl) {
-    $ReleaseBaseUrl = "https://github.com/luqmanhafiz81/dexcel/releases/latest/download"
+    $ReleaseBaseUrl = "https://github.com/lqmnwido/dexcel/releases/latest/download"
 }
 
 $InstallDir = Join-Path $env:USERPROFILE ".dexcel"
