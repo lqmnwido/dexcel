@@ -30,7 +30,7 @@ try:
     from textual.containers import Horizontal, Vertical
     from textual.screen import Screen
     from textual.widgets import (
-        Button, Header, Input, Label,
+        Button, Input, Label,
         RadioSet, RadioButton, RichLog, Static,
     )
     from textual import work
@@ -398,23 +398,14 @@ class MainScreen(Screen):
     }
     RadioSet {
         margin: 1 0;
-        width: 100%;
     }
     RadioButton {
         padding: 0 1;
     }
-    .row {
-        align: center middle;
-        height: auto;
-        margin: 1 0 0 0;
-    }
-    Button {
-        min-width: 20;
-    }
     """
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Static("Dexcel — Database Schema Exporter", id="titlebar")
         with Vertical():
             with RadioSet(id="db-type"):
                 for key, name in DB_TYPES_ORDERED:
@@ -452,19 +443,13 @@ class SQLiteScreen(Screen):
         margin: 0 0 1 0;
         width: 100%;
     }
-    .row {
-        align: center middle;
-        height: auto;
-        margin: 1 0 0 0;
-    }
     .row Button {
         margin: 0 1;
-        min-width: 14;
     }
     """
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Static("Dexcel — Database Schema Exporter", id="titlebar")
         with Vertical():
             yield Input(placeholder="Path to .db or .sqlite file", id="db-path")
             yield Label("", id="sqlite-error")
@@ -501,19 +486,13 @@ class NetScreen(Screen):
         margin: 0 0 1 0;
         width: 100%;
     }
-    .row {
-        align: center middle;
-        height: auto;
-        margin: 1 0 0 0;
-    }
     .row Button {
         margin: 0 1;
-        min-width: 14;
     }
     """
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Static("Dexcel — Database Schema Exporter", id="titlebar")
         with Vertical():
             yield Input(placeholder="Host", id="host")
             yield Input(placeholder="Port", id="port")
@@ -576,19 +555,13 @@ class ExportScreen(Screen):
         margin: 0 0 1 0;
         width: 100%;
     }
-    .row {
-        align: center middle;
-        height: auto;
-        margin: 1 0 0 0;
-    }
     .row Button {
         margin: 0 1;
-        min-width: 14;
     }
     """
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Static("Dexcel — Database Schema Exporter", id="titlebar")
         with Vertical():
             yield RichLog(id="log", highlight=True, markup=True)
             yield Static("", id="file-link")
@@ -689,8 +662,103 @@ class DexcelApp(App):
     SUB_TITLE = ""
 
     CSS = """
+    Screen {
+        background: #1a1b2e;
+    }
+
+    #titlebar {
+        background: #3d5a80;
+        color: #ffffff;
+        text-style: bold;
+        height: 1;
+        content-align: center middle;
+        width: 100%;
+    }
+
     Button {
         min-width: 14;
+        background: #3d5a80;
+        color: #ffffff;
+        padding: 0 2;
+    }
+
+    Button:hover {
+        background: #5a7ab0;
+    }
+
+    Button:disabled {
+        background: #2a2a3e;
+        color: #666680;
+    }
+
+    Button.-primary {
+        background: #ee6c4d;
+        color: #ffffff;
+    }
+
+    Button.-primary:hover {
+        background: #ff8a6a;
+    }
+
+    Input {
+        background: #2a2b3e;
+        color: #e0e0e0;
+        border: tall #3d5a80;
+    }
+
+    Input:focus {
+        border: tall #ee6c4d;
+    }
+
+    Label {
+        color: #e0e0e0;
+    }
+
+    RadioSet {
+        background: #2a2b3e;
+        border: tall #3d5a80;
+        color: #e0e0e0;
+    }
+
+    RadioButton {
+        background: #2a2b3e;
+        color: #e0e0e0;
+        padding: 0 1;
+    }
+
+    RadioButton:hover {
+        background: #3d5a80;
+        color: #ffffff;
+    }
+
+    RadioButton.-selected {
+        background: #ee6c4d;
+        color: #ffffff;
+    }
+
+    .row {
+        align: center middle;
+        height: auto;
+        margin: 1 0 0 0;
+    }
+
+    RichLog {
+        background: #2a2b3e;
+        color: #e0e0e0;
+        border: tall #3d5a80;
+    }
+
+    #file-link {
+        background: #1e3a2e;
+        color: #5ceda0;
+        border: tall #5ceda0;
+        padding: 1 2;
+        margin: 0 0 1 0;
+        width: 100%;
+    }
+
+    #sqlite-error, #net-error {
+        color: #ff6b6b;
     }
     """
 
