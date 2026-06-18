@@ -51,13 +51,9 @@ dexcel
 
 ## Database reader
 
-<<<<<<< HEAD
-`dexcel` opens a terminal database reader form. Choose a database type, fill in the connection details, then approve the describe action to start the export.
-=======
 The terminal interface follows the current terminal size. Select a database,
 enter the Host, Port, Username, Password, and Dataname, then choose
 **Approve Describe**. SQLite uses a database-file path instead.
->>>>>>> 430f946 (database fix)
 
 Dexcel will export your database table descriptions into an Excel file, for example:
 
@@ -65,13 +61,9 @@ Dexcel will export your database table descriptions into an Excel file, for exam
 mypelantikan_table_descriptions.xlsx
 ```
 
-<<<<<<< HEAD
-After the export finishes, the saved file path is shown in the app and can be clicked to open the folder containing the Excel file.
-=======
 Progress is shown while Dexcel connects, reads the table list, describes each
 table, and saves the workbook. After export, select the saved path to open its
 folder.
->>>>>>> 430f946 (database fix)
 
 ---
 
