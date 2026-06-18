@@ -29,6 +29,10 @@ import logging
 import traceback
 from datetime import datetime
 
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+from openpyxl.utils import get_column_letter
+
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(SCRIPT_DIR, "logs")
@@ -550,26 +554,115 @@ def render_table_title(table_name):
 def export_schema_descriptions(conn, driver, tables, output_file):
     headers = ["Field", "Type", "Null", "Key", "Default", "Extra"]
 
-    with open(output_file, "w", encoding="utf-8") as f:
-        for index, table in enumerate(tables):
-            print(f"Describing table: {table}")
-            logger.info("Describing table: %s", table)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Table Descriptions"
 
-            try:
-                rows = get_table_description(conn, driver, table)
-            except Exception as e:
-                logger.error("Failed to describe table '%s': %s", table, e)
-                f.write(render_table_title(table) + "\n")
-                f.write(f"ERROR: Failed to describe table: {e}\n\n")
-                continue
+    title_fill = PatternFill("solid", fgColor="1F4E78")
+    title_font = Font(color="FFFFFF", bold=True, size=12)
 
-            f.write(render_table_title(table) + "\n")
-            f.write(render_table_box(headers, rows) + "\n")
+    header_fill = PatternFill("solid", fgColor="D9EAF7")
+    header_font = Font(bold=True)
 
-            if index != len(tables) - 1:
-                f.write("\n")
+    thin = Side(style="thin", color="BFBFBF")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    logger.info("Schema description export finished: %s", output_file)
+    center = Alignment(horizontal="center", vertical="center")
+    left = Alignment(horizontal="left", vertical="top", wrap_text=True)
+
+    row_num = 1
+
+    for table in tables:
+        print(f"Describing table: {table}")
+        logger.info("Describing table: %s", table)
+
+        try:
+            rows = get_table_description(conn, driver, table)
+        except Exception as e:
+            logger.error("Failed to describe table '%s': %s", table, e)
+
+            ws.merge_cells(
+                start_row=row_num,
+                start_column=1,
+                end_row=row_num,
+                end_column=len(headers),
+            )
+            cell = ws.cell(row=row_num, column=1, value=f"TABLE: {table}")
+            cell.fill = title_fill
+            cell.font = title_font
+            cell.alignment = left
+            row_num += 1
+
+            ws.cell(row=row_num, column=1, value=f"ERROR: Failed to describe table: {e}")
+            row_num += 2
+            continue
+
+        # Table title row
+        ws.merge_cells(
+            start_row=row_num,
+            start_column=1,
+            end_row=row_num,
+            end_column=len(headers),
+        )
+        title_cell = ws.cell(row=row_num, column=1, value=f"TABLE: {table}")
+        title_cell.fill = title_fill
+        title_cell.font = title_font
+        title_cell.alignment = left
+        title_cell.border = border
+
+        for col in range(1, len(headers) + 1):
+            ws.cell(row=row_num, column=col).border = border
+
+        row_num += 1
+
+        # Header row
+        for col_num, header in enumerate(headers, start=1):
+            cell = ws.cell(row=row_num, column=col_num, value=header)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.border = border
+            cell.alignment = center
+
+        row_num += 1
+
+        # Column rows
+        for description in rows:
+            for col_num, header in enumerate(headers, start=1):
+                value = description.get(header, "")
+                if value is None:
+                    value = "NULL"
+
+                cell = ws.cell(row=row_num, column=col_num, value=str(value))
+                cell.border = border
+                cell.alignment = left
+
+            row_num += 1
+
+        # Blank row between tables
+        row_num += 1
+
+    # Freeze top row? Not useful here because each table has its own header.
+    # Instead, auto-size columns.
+    for column_cells in ws.columns:
+        max_length = 0
+        column_letter = get_column_letter(column_cells[0].column)
+
+        for cell in column_cells:
+            if cell.value is not None:
+                max_length = max(max_length, len(str(cell.value)))
+
+        ws.column_dimensions[column_letter].width = min(max_length + 2, 60)
+
+    ws.column_dimensions["A"].width = 28
+    ws.column_dimensions["B"].width = 35
+    ws.column_dimensions["C"].width = 10
+    ws.column_dimensions["D"].width = 10
+    ws.column_dimensions["E"].width = 25
+    ws.column_dimensions["F"].width = 25
+
+    wb.save(output_file)
+
+    logger.info("Schema description Excel export finished: %s", output_file)
 
 
 def main():
@@ -597,12 +690,12 @@ def main():
         print(f"\nFound {len(tables)} table(s): {', '.join(tables)}")
 
         output_file = ask(
-            "Output schema filename",
-            default=f"{db_name}_table_descriptions.txt",
+            "Output Excel filename",
+            default=f"{db_name}_table_descriptions.xlsx",
         )
 
-        if not output_file.lower().endswith(".txt"):
-            output_file += ".txt"
+        if not output_file.lower().endswith(".xlsx"):
+            output_file += ".xlsx"
 
         if os.path.exists(output_file):
             overwrite = ask(
@@ -613,8 +706,8 @@ def main():
             if overwrite.lower() not in ("y", "yes"):
                 output_file = ask("Enter a different filename")
 
-                if not output_file.lower().endswith(".txt"):
-                    output_file += ".txt"
+                if not output_file.lower().endswith(".xlsx"):
+                    output_file += ".xlsx"
 
         export_schema_descriptions(conn, driver, tables, output_file)
 
