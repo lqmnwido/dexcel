@@ -366,7 +366,7 @@ def export_to_excel(conn, driver: str, tables, output_path: str,
 class MainScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Static("Dexcel — Database Schema Exporter", id="titlebar")
-        with Vertical():
+        with Vertical(id="page"):
             yield Label("Database Reader", id="screen-title")
             yield Label("Select a database type to describe.")
             with RadioSet(id="db-type"):
@@ -391,14 +391,14 @@ class MainScreen(Screen):
 class SQLiteScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Static("Dexcel — Database Schema Exporter", id="titlebar")
-        with Vertical():
+        with Vertical(id="page"):
             yield Label("SQLite Database File", id="screen-title")
             yield Label("Path")
             yield Input(placeholder="Path to .db or .sqlite file", id="db-path")
             yield Label("", id="sqlite-error")
             with Horizontal():
                 yield Button("Cancel", id="back")
-                yield Button("Approve Describe", variant="primary", id="connect")
+                yield Button("Describe", variant="primary", id="connect")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "back":
@@ -418,7 +418,7 @@ class SQLiteScreen(Screen):
 class NetScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Static("Dexcel — Database Schema Exporter", id="titlebar")
-        with Vertical():
+        with Vertical(id="page"):
             yield Label("Database Connection", id="screen-title")
             yield Label("Host")
             yield Input(placeholder="Host", id="host")
@@ -468,8 +468,9 @@ class NetScreen(Screen):
 class ExportScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Static("Dexcel — Database Schema Exporter", id="titlebar")
-        with Vertical():
+        with Vertical(id="page"):
             yield Label("Export Progress")
+            yield Label("Preparing export...", id="export-status")
             yield RichLog(id="log", highlight=True, markup=True)
             yield Label("Saved Excel file")
             yield Button("Waiting for export...", id="file-link", disabled=True)
@@ -478,7 +479,8 @@ class ExportScreen(Screen):
                 yield Button("Exit", variant="primary", id="exit", disabled=True)
 
     def on_mount(self) -> None:
-        self.run_export()
+        self.query_one("#export-status", Label).update("Connecting to database...")
+        self.call_after_refresh(self.run_export)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
@@ -494,13 +496,19 @@ class ExportScreen(Screen):
         def _log(msg: str) -> None:
             self.call_from_thread(self._append_log, msg)
 
+        def _status(msg: str) -> None:
+            self.call_from_thread(self._update_status, msg)
+
         try:
+            _status("Connecting to database...")
             _log("Connecting to database...")
             conn, db_name = build_connection(self.app.driver, **self.app.db_params)
             self.app.conn = conn
             self.app.db_name = db_name
+            _status("Connection established.")
             _log("Connected successfully.")
 
+            _status("Listing tables...")
             _log("Listing tables...")
             tables = list_tables(conn, self.app.driver)
             _log(f"Found {len(tables)} table(s).")
@@ -517,6 +525,7 @@ class ExportScreen(Screen):
             if os.path.exists(output_path):
                 _log("File exists -- will overwrite")
 
+            _status("Writing Excel file...")
             _log(f"Output: {output_path}")
 
             def on_progress(msg: str) -> None:
@@ -524,10 +533,12 @@ class ExportScreen(Screen):
 
             export_to_excel(conn, self.app.driver, tables, output_path, on_progress)
 
+            _status("Export complete.")
             _log("Export complete!")
             self.call_from_thread(self._finish, True, output_path)
 
         except Exception as e:
+            _status("Export failed.")
             _log(f"Error: {e}")
             logger.error("Export failed: %s", traceback.format_exc())
             self.call_from_thread(self._finish, False, error=str(e))
@@ -540,6 +551,9 @@ class ExportScreen(Screen):
 
     def _append_log(self, message: str) -> None:
         self.query_one("#log", RichLog).write(message)
+
+    def _update_status(self, message: str) -> None:
+        self.query_one("#export-status", Label).update(message)
 
     def _finish(self, success: bool, file_path: Optional[str] = None,
                 error: Optional[str] = None) -> None:
@@ -581,14 +595,15 @@ class DexcelApp(App):
         width: 100%;
     }
 
-    Vertical {
-        align: center top;
-        width: 76;
-        height: auto;
-        margin: 1 2;
+    #page {
+        align: left top;
+        width: 100%;
+        height: 1fr;
+        margin: 0;
         padding: 1 2;
         border: round #394056;
         background: #222836;
+        overflow: auto;
     }
 
     Input {
@@ -603,7 +618,7 @@ class DexcelApp(App):
     }
 
     RichLog {
-        height: 60%;
+        height: 1fr;
         min-height: 10;
         margin: 0 0 1 0;
         border: round #394056;
@@ -612,13 +627,14 @@ class DexcelApp(App):
 
     Horizontal {
         align: center middle;
+        width: 100%;
         height: auto;
         margin: 1 0 0 0;
     }
 
     Horizontal Button {
         margin: 0 1;
-        min-width: 14;
+        min-width: 12;
     }
 
     #file-link {
