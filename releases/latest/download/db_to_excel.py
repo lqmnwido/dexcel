@@ -15,9 +15,9 @@ Password input is hidden.
 
 All activity is logged to logs/dexcel_<timestamp>.log for troubleshooting.
 """
-
 import sys
 import os
+import re
 import getpass
 import logging
 import traceback
@@ -320,6 +320,31 @@ def sanitize_sheet_name(name, used_names):
 
     return sheet_name
 
+ILLEGAL_EXCEL_CHARS_RE = re.compile(r"[\x00-\x08\x0B-\x0C\x0E-\x1F]")
+
+
+def clean_excel_value(value):
+    """
+    Excel cannot store some control characters.
+    Laravel/PHP serialized objects can contain null bytes, especially for
+    protected/private properties. Remove those characters before writing.
+    """
+    if isinstance(value, str):
+        return ILLEGAL_EXCEL_CHARS_RE.sub("", value)
+
+    return value
+
+
+def clean_dataframe_for_excel(df):
+    """
+    Clean only object/string columns before writing to Excel.
+    """
+    object_columns = df.select_dtypes(include=["object"]).columns
+
+    for column in object_columns:
+        df[column] = df[column].map(clean_excel_value)
+
+    return df
 
 def export_to_excel(conn, driver, tables, output_file):
     used_sheet_names = set()
@@ -344,15 +369,22 @@ def export_to_excel(conn, driver, tables, output_file):
 
                 try:
                     df = pd.read_sql(query, conn)
+                    df = clean_dataframe_for_excel(df)
                 except Exception as e:
-                    logger.error("Failed to export table '%s': %s", table, e)
+                    logger.error("Failed to read/clean table '%s': %s", table, e)
                     print(f"  Skipped '{table}' due to error: {e}")
                     skipped_tables.append(table)
                     continue
 
                 sheet_name = sanitize_sheet_name(table, used_sheet_names)
-                df.to_excel(writer, sheet_name=sheet_name, index=False)
 
+                try:
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+                except Exception as e:
+                    logger.error("Failed to write table '%s' to Excel: %s", table, e)
+                    print(f"  Skipped '{table}' due to Excel write error: {e}")
+                    skipped_tables.append(table)
+                    continue
                 worksheet = writer.sheets[sheet_name]
 
                 for column_cells in worksheet.columns:

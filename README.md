@@ -21,3 +21,9 @@ Supported databases:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/luqmanhafiz81/dexcel/main/install.sh | sh
 ```
+
+### Windows
+
+```bash
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/luqmanhafiz81/dexcel/main/install.ps1 | iex"
+```
