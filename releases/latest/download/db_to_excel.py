@@ -4,7 +4,6 @@ Dexcel — Database Schema Description Exporter
 """
 
 import os
-import sys
 import platform
 import subprocess
 import logging
@@ -13,14 +12,14 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
-from textual.screen import Screen
-from textual.widgets import (
-    Button, Input, Label,
-    RadioSet, RadioButton, RichLog, Static,
-)
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+from openpyxl.utils import get_column_letter
 from textual import work
+from textual.app import App, ComposeResult
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import Screen
+from textual.widgets import Button, Input, Label, RadioButton, RadioSet, RichLog, Static
 
 
 # ── Logging ──────────────────────────────────────────────────────────
@@ -61,62 +60,49 @@ DEFAULT_PORTS = {
     "oracle": 1521,
 }
 
-DB_CONNECT_TIMEOUT = 5
-
-HEADERS = ["Field", "Type", "Null", "Key", "Default", "Extra"]
-
-
-# ── Helpers ──────────────────────────────────────────────────────────
-
-def open_file_location(filepath: str) -> None:
+def open_file_location(filepath):
     filepath = os.path.abspath(filepath)
-    system = platform.system()
     try:
-        if system == "Darwin":
+        if platform.system() == "Darwin":
             subprocess.Popen(["open", "-R", filepath])
-        elif system == "Windows":
+        elif platform.system() == "Windows":
             subprocess.Popen(["explorer", "/select,", os.path.normpath(filepath)])
         else:
             subprocess.Popen(["xdg-open", os.path.dirname(filepath)])
-    except Exception as e:
-        logger.error("Failed to open file location: %s", e)
+    except Exception as exc:
+        logger.error("Could not open saved file location: %s", exc)
 
 
-# ── Database Functions ──────────────────────────────────────────────
-
-def build_connection(driver: str, on_phase=None, **params):
-    start_all = time.perf_counter()
+def build_connection(driver, params):
+    """Open one connection using the original, known-fast driver path."""
 
     if driver == "sqlite":
         path = params["path"]
+
         if not os.path.isfile(path):
             raise FileNotFoundError(f"SQLite file not found: {path}")
 
         if on_phase:
             on_phase("Loading database driver...")
         import sqlite3
-
-        if on_phase:
-            on_phase("Opening database connection...")
-        t0 = time.perf_counter()
         conn = sqlite3.connect(path)
-        logger.info("SQLite connect took %.2fs", time.perf_counter() - t0)
         db_name = os.path.splitext(os.path.basename(path))[0]
-        logger.info(
-            "Total build_connection took %.2fs",
-            time.perf_counter() - start_all,
-        )
-        return conn, db_name
+        return conn, db_name, driver
 
-    host = params.get("host", "127.0.0.1")
-    port = params.get("port", str(DEFAULT_PORTS.get(driver, "")))
-    user = params.get("user", "")
-    password = params.get("password", "")
-    database = params.get("database", "")
+    host = params["host"]
+    port = params["port"]
+    user = params["user"]
+    password = params["password"]
+    database = params["database"]
 
     logger.info(
-        "Connecting: driver=%s host=%s port=%s user=%s db=%s",
-        driver, host, port, user, database,
+        "Connecting: driver=%s host=%s port=%s user=%s db=%s password=%s",
+        driver,
+        host,
+        port,
+        user,
+        database,
+        "*" * len(password),
     )
 
     if driver == "mysql":
@@ -126,14 +112,16 @@ def build_connection(driver: str, on_phase=None, **params):
         import pymysql
         logger.info("Driver import for mysql took %.2fs", time.perf_counter() - t0)
 
-        if on_phase:
-            on_phase("Opening database connection...")
-        t0 = time.perf_counter()
         conn = pymysql.connect(
-            host=host, port=int(port), user=user, password=password,
-            database=database, charset="utf8mb4", connect_timeout=DB_CONNECT_TIMEOUT,
+            host=host,
+            port=int(port),
+            user=user,
+            password=password,
+            database=database,
+            charset="utf8mb4",
+            connect_timeout=10,
         )
-        logger.info("MySQL connect/auth took %.2fs", time.perf_counter() - t0)
+
     elif driver == "postgresql":
         if on_phase:
             on_phase("Loading database driver...")
@@ -144,14 +132,15 @@ def build_connection(driver: str, on_phase=None, **params):
             time.perf_counter() - t0,
         )
 
-        if on_phase:
-            on_phase("Opening database connection...")
-        t0 = time.perf_counter()
         conn = psycopg2.connect(
-            host=host, port=port, user=user, password=password,
-            dbname=database, connect_timeout=DB_CONNECT_TIMEOUT,
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            dbname=database,
+            connect_timeout=10,
         )
-        logger.info("PostgreSQL connect/auth took %.2fs", time.perf_counter() - t0)
+
     elif driver == "mssql":
         if on_phase:
             on_phase("Loading database driver...")
@@ -160,10 +149,16 @@ def build_connection(driver: str, on_phase=None, **params):
             import pyodbc
         except ImportError as exc:
             raise ImportError(
-                "SQL Server driver not available.\n"
-                "Install Microsoft ODBC Driver 17 for SQL Server."
+                "SQL Server driver unavailable. Install Microsoft ODBC Driver 17."
             ) from exc
-        logger.info("Driver import for mssql took %.2fs", time.perf_counter() - t0)
+        conn_str = (
+            "DRIVER={ODBC Driver 17 for SQL Server};"
+            f"SERVER={host},{port};"
+            f"DATABASE={database};"
+            f"UID={user};"
+            f"PWD={password}"
+        )
+        conn = pyodbc.connect(conn_str, timeout=10)
 
         conn_str = (
             "DRIVER={ODBC Driver 17 for SQL Server};"
@@ -182,9 +177,8 @@ def build_connection(driver: str, on_phase=None, **params):
         import oracledb
         logger.info("Driver import for oracle took %.2fs", time.perf_counter() - t0)
 
-        t0 = time.perf_counter()
         dsn = oracledb.makedsn(host, port, service_name=database)
-        logger.info("Oracle DSN build took %.2fs", time.perf_counter() - t0)
+        conn = oracledb.connect(user=user, password=password, dsn=dsn)
 
         if on_phase:
             on_phase("Opening database connection...")
@@ -194,11 +188,7 @@ def build_connection(driver: str, on_phase=None, **params):
     else:
         raise ValueError(f"Unsupported driver: {driver}")
 
-    logger.info(
-        "Total build_connection took %.2fs",
-        time.perf_counter() - start_all,
-    )
-    return conn, database
+    return conn, database, driver
 
 
 def list_tables(conn, driver: str):
@@ -339,11 +329,73 @@ def get_table_description(conn, driver: str, table: str):
     raise ValueError(f"Unsupported driver: {driver}")
 
 
-def export_to_excel(conn, driver: str, tables, output_path: str,
-                    on_progress=None, on_phase=None) -> None:
-    from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
-    from openpyxl.utils import get_column_letter
+def make_box_line(widths):
+    return "+" + "+".join("-" * (width + 2) for width in widths) + "+"
+
+
+def make_box_row(values, widths):
+    cells = []
+
+    for value, width in zip(values, widths):
+        text = "" if value is None else str(value)
+        cells.append(" " + text.ljust(width) + " ")
+
+    return "|" + "|".join(cells) + "|"
+
+
+def render_table_box(headers, rows):
+    normalized_rows = []
+
+    for row in rows:
+        normalized_rows.append([row.get(header, "") for header in headers])
+
+    widths = []
+
+    for index, header in enumerate(headers):
+        max_width = len(header)
+
+        for row in normalized_rows:
+            max_width = max(max_width, len(str(row[index])))
+
+        widths.append(max_width)
+
+    output = []
+    line = make_box_line(widths)
+
+    output.append(line)
+    output.append(make_box_row(headers, widths))
+    output.append(line)
+
+    for row in normalized_rows:
+        output.append(make_box_row(row, widths))
+
+    output.append(line)
+
+    return "\n".join(output)
+
+
+def render_table_title(table_name):
+    title = f"TABLE: {table_name}"
+    width = len(title)
+
+    return "\n".join(
+        [
+            "+" + "-" * (width + 2) + "+",
+            "| " + title + " |",
+            "+" + "-" * (width + 2) + "+",
+        ]
+    )
+
+
+def export_schema_descriptions(
+    conn,
+    driver,
+    tables,
+    output_file,
+    on_progress=None,
+    on_saving=None,
+):
+    headers = ["Field", "Type", "Null", "Key", "Default", "Extra"]
 
     wb = Workbook()
     ws = wb.active
@@ -361,7 +413,8 @@ def export_to_excel(conn, driver: str, tables, output_path: str,
     row_num = 1
     for table in tables:
         if on_progress:
-            on_progress(f"Describing table: {table}")
+            on_progress(table)
+        logger.info("Describing table: %s", table)
 
         try:
             t0 = time.perf_counter()
@@ -426,13 +479,9 @@ def export_to_excel(conn, driver: str, tables, output_path: str,
     ws.column_dimensions["E"].width = 25
     ws.column_dimensions["F"].width = 25
 
-    if on_phase:
-        on_phase("Saving Excel file...")
-    t0 = time.perf_counter()
-    wb.save(output_path)
-    logger.info("Excel save took %.2fs", time.perf_counter() - t0)
-    if on_progress:
-        on_progress(f"Saved to: {output_path}")
+    if on_saving:
+        on_saving()
+    wb.save(output_file)
 
 
 # ── Screens ─────────────────────────────────────────────────────────
@@ -756,17 +805,396 @@ class DexcelApp(App):
         self.push_screen(MainScreen())
 
 
+class ExportCancelled(Exception):
+    pass
+
+
+class DatabaseScreen(Screen):
+    def compose(self) -> ComposeResult:
+        yield Static("DEXCEL  /  DATABASE READER", classes="topbar")
+        with VerticalScroll(classes="page"):
+            yield Label("Choose a database", classes="heading")
+            yield Label(
+                "Select the engine whose schema you want to describe.",
+                classes="muted",
+            )
+            with RadioSet(id="database-types"):
+                for info in DB_TYPES.values():
+                    yield RadioButton(info["name"], id=info["driver"])
+            with Horizontal(classes="actions"):
+                yield Button("Exit", id="exit")
+                yield Button("Continue", id="continue", variant="primary", disabled=True)
+
+    def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
+        if event.pressed is None:
+            return
+        self.app.driver = event.pressed.id
+        self.query_one("#continue", Button).disabled = False
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "exit":
+            self.app.exit()
+        elif event.button.id == "continue":
+            self.app.push_screen(ConnectionScreen(self.app.driver))
+
+
+class ConnectionScreen(Screen):
+    def __init__(self, driver):
+        super().__init__()
+        self.driver = driver
+
+    def compose(self) -> ComposeResult:
+        yield Static("DEXCEL  /  CONNECTION", classes="topbar")
+        with VerticalScroll(classes="page"):
+            yield Label("Database connection", classes="heading")
+            yield Label(
+                next(info["name"] for info in DB_TYPES.values()
+                     if info["driver"] == self.driver),
+                classes="engine-name",
+            )
+            if self.driver == "sqlite":
+                yield Label("Database file")
+                yield Input(
+                    placeholder="/path/to/database.sqlite",
+                    id="database-path",
+                )
+            else:
+                yield Label("Host")
+                yield Input(value="127.0.0.1", placeholder="Database host", id="host")
+                yield Label("Port")
+                yield Input(
+                    value=str(DEFAULT_PORTS[self.driver]),
+                    placeholder="Port",
+                    id="port",
+                )
+                yield Label("Username")
+                yield Input(
+                    value="root" if self.driver == "mysql" else "",
+                    placeholder="Username",
+                    id="username",
+                )
+                yield Label("Password")
+                yield Input(
+                    placeholder="Password (may be empty)",
+                    password=True,
+                    id="password",
+                )
+                yield Label("Dataname")
+                yield Input(
+                    placeholder="Database name or service name",
+                    id="database",
+                )
+            yield Label("", id="form-error")
+            with Horizontal(classes="actions"):
+                yield Button("Cancel", id="cancel")
+                yield Button(
+                    "Approve Describe",
+                    id="describe",
+                    variant="primary",
+                )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.app.pop_screen()
+            return
+        if event.button.id != "describe":
+            return
+
+        error = self.query_one("#form-error", Label)
+        if self.driver == "sqlite":
+            path = os.path.expanduser(
+                self.query_one("#database-path", Input).value.strip()
+            )
+            if not path:
+                error.update("Database file is required.")
+                return
+            if not os.path.isfile(path):
+                error.update("Database file does not exist.")
+                return
+            params = {"path": path}
+        else:
+            params = {
+                "host": self.query_one("#host", Input).value.strip(),
+                "port": self.query_one("#port", Input).value.strip(),
+                "user": self.query_one("#username", Input).value.strip(),
+                "password": self.query_one("#password", Input).value,
+                "database": self.query_one("#database", Input).value.strip(),
+            }
+            missing = [
+                name for name in ("host", "port", "user", "database")
+                if not params[name]
+            ]
+            if missing:
+                error.update(f"Required: {', '.join(missing)}")
+                return
+            try:
+                int(params["port"])
+            except ValueError:
+                error.update("Port must be a number.")
+                return
+
+        self.app.db_params = params
+        self.app.push_screen(ExportScreen())
+
+
+class ExportScreen(Screen):
+    def __init__(self):
+        super().__init__()
+        self.cancel_requested = False
+        self.running = True
+
+    def compose(self) -> ComposeResult:
+        yield Static("DEXCEL  /  DATABASE DESCRIBE", classes="topbar")
+        with Vertical(classes="export-page"):
+            yield Label("Preparing export", classes="heading", id="status")
+            yield Label("The active operation is shown below.", classes="muted")
+            yield RichLog(id="progress-log", markup=False, wrap=True)
+            yield Label("Saved Excel file", classes="section-label")
+            yield Button(
+                "Waiting for export...",
+                id="saved-file",
+                disabled=True,
+            )
+            with Horizontal(classes="actions"):
+                yield Button("Cancel", id="cancel")
+                yield Button("Exit", id="exit", variant="primary", disabled=True)
+
+    def on_mount(self) -> None:
+        self.run_export()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "saved-file" and self.app.output_file:
+            open_file_location(self.app.output_file)
+        elif event.button.id == "exit":
+            self.app.exit()
+        elif event.button.id == "cancel":
+            if self.running:
+                self.cancel_requested = True
+                event.button.disabled = True
+                self.query_one("#status", Label).update("Cancelling safely...")
+            else:
+                self.app.pop_screen()
+
+    @work(thread=True, exit_on_error=False)
+    def run_export(self) -> None:
+        conn = None
+        try:
+            self._thread_status("Loading driver and opening connection...")
+            conn, db_name, driver = build_connection(
+                self.app.driver,
+                self.app.db_params,
+            )
+            self._thread_log("Connected successfully.")
+
+            if self.cancel_requested:
+                raise ExportCancelled()
+
+            self._thread_status("Reading table list...")
+            tables = list_tables(conn, driver)
+            self._thread_log(f"Found {len(tables)} table(s).")
+            if not tables:
+                raise RuntimeError("No tables were found in this database.")
+
+            output_path = os.path.abspath(
+                f"{db_name}_table_descriptions.xlsx"
+            )
+            self.app.output_file = output_path
+            if os.path.exists(output_path):
+                self._thread_log("Existing Excel file will be replaced.")
+
+            self._thread_status("Reading table descriptions...")
+
+            def on_progress(table):
+                if self.cancel_requested:
+                    raise ExportCancelled()
+                self._thread_log(f"Describing: {table}")
+
+            export_schema_descriptions(
+                conn,
+                driver,
+                tables,
+                output_path,
+                on_progress=on_progress,
+                on_saving=lambda: self._thread_status("Saving Excel file..."),
+            )
+
+            self._thread_status("Export complete")
+            self._thread_log(f"Saved: {output_path}")
+            logger.info("=== Dexcel schema export session finished successfully ===")
+            self.app.call_from_thread(self._finish, True, output_path, None)
+        except ExportCancelled:
+            self._thread_status("Export cancelled")
+            self._thread_log("The operation was cancelled.")
+            self.app.call_from_thread(self._finish, False, None, None)
+        except Exception as exc:
+            logger.error("Export failed:\n%s", traceback.format_exc())
+            self._thread_status("Export failed")
+            self._thread_log(f"Error: {exc}")
+            self._thread_log(f"Diagnostic log: {LOG_FILE}")
+            self.app.call_from_thread(self._finish, False, None, str(exc))
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    logger.warning("Could not close database connection.")
+
+    def _thread_status(self, message):
+        self.app.call_from_thread(self._set_status, message)
+
+    def _thread_log(self, message):
+        self.app.call_from_thread(self._write_log, message)
+
+    def _set_status(self, message):
+        self.query_one("#status", Label).update(message)
+
+    def _write_log(self, message):
+        self.query_one("#progress-log", RichLog).write(message)
+
+    def _finish(
+        self,
+        success,
+        output_path: Optional[str],
+        error: Optional[str],
+    ) -> None:
+        self.running = False
+        cancel = self.query_one("#cancel", Button)
+        cancel.disabled = False
+        cancel.label = "Back"
+        self.query_one("#exit", Button).disabled = False
+
+        saved_file = self.query_one("#saved-file", Button)
+        if success and output_path:
+            saved_file.label = output_path
+            saved_file.disabled = False
+        elif error:
+            saved_file.label = "Export failed. Review the progress log."
+        else:
+            saved_file.label = "No Excel file was created."
+
+
+class DexcelApp(App):
+    TITLE = "Dexcel"
+    ENABLE_COMMAND_PALETTE = False
+
+    CSS = """
+    Screen {
+        background: #10161d;
+        color: #e7edf2;
+    }
+
+    .topbar {
+        width: 100%;
+        height: 3;
+        padding: 1 2 0 2;
+        background: #0d5661;
+        color: #f3fbf8;
+        text-style: bold;
+    }
+
+    .page, .export-page {
+        width: 100%;
+        height: 1fr;
+        padding: 1 3;
+        background: #17212b;
+    }
+
+    .heading {
+        width: 100%;
+        height: auto;
+        color: #f4b860;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    .muted {
+        width: 100%;
+        height: auto;
+        color: #91a3b0;
+        margin-bottom: 1;
+    }
+
+    .engine-name {
+        color: #55c2b2;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    RadioSet {
+        width: 100%;
+        height: auto;
+        margin-bottom: 1;
+        border: round #304552;
+        background: #111a22;
+    }
+
+    Input {
+        width: 100%;
+        margin-bottom: 1;
+        border: tall #304552;
+        background: #0e171e;
+    }
+
+    Input:focus {
+        border: tall #55c2b2;
+    }
+
+    #form-error {
+        width: 100%;
+        height: auto;
+        color: #ff7b72;
+    }
+
+    .actions {
+        width: 100%;
+        height: 3;
+        margin-top: 1;
+        align: center middle;
+    }
+
+    .actions Button {
+        width: 1fr;
+        min-width: 10;
+        margin: 0 1;
+    }
+
+    #progress-log {
+        width: 100%;
+        height: 1fr;
+        min-height: 5;
+        margin-bottom: 1;
+        border: round #304552;
+        background: #0e171e;
+        scrollbar-color: #55c2b2;
+    }
+
+    .section-label {
+        width: 100%;
+        height: 1;
+        color: #91a3b0;
+    }
+
+    #saved-file {
+        width: 100%;
+        height: 3;
+        margin-top: 1;
+    }
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.driver = None
+        self.db_params = {}
+        self.output_file = None
+
+    def on_mount(self) -> None:
+        logger.info("=== Dexcel schema export session started ===")
+        self.push_screen(DatabaseScreen())
+
+
 def main():
-    app = DexcelApp()
-    app.run()
+    DexcelApp().run()
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        pass
-    except Exception:
-        logger.critical("Unhandled exception:\n%s", traceback.format_exc())
-        print(f"\nAn unexpected error occurred. Details: {LOG_FILE}")
-        sys.exit(1)
+    main()
