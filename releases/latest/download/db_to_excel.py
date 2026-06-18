@@ -71,6 +71,14 @@ DB_TYPES_ORDERED = [
     ("oracle", "Oracle"),
 ]
 
+DB_ICONS = {
+    "mysql": "🐬",
+    "postgresql": "🐘",
+    "sqlite": "🗄️",
+    "mssql": "🪟",
+    "oracle": "☁️",
+}
+
 DEFAULT_PORTS = {
     "mysql": 3306,
     "postgresql": 5432,
@@ -389,34 +397,156 @@ def export_to_excel(conn, driver: str, tables, output_path: str,
         on_progress(f"Saved to: {output_path}")
 
 
-# ── Textual Screens ──────────────────────────────────────────────────
+# ── Shared Widgets ──────────────────────────────────────────────────
 
-class MainScreen(Screen):
-    """Database type selection."""
+class DexcelHeader(Static):
+    """App header bar with gradient accent."""
 
     def compose(self) -> ComposeResult:
-        yield Header()
-        with Vertical(classes="screen-content"):
-            yield Label("Dexcel", id="app-title")
-            yield Label("Database Schema Description Exporter", id="app-subtitle")
-            yield Label("Select database type:")
+        yield Label("Dexcel  —  Database Schema → Excel")
+
+    DEFAULT_CSS = """
+    DexcelHeader {
+        background: $primary;
+        color: $text;
+        text-style: bold;
+        height: 1;
+        content-align: center middle;
+        width: 100%;
+    }
+    """
+
+
+class Card(Static):
+    """A bordered card container for grouping form fields."""
+
+    DEFAULT_CSS = """
+    Card {
+        border: tall $surface-lighten-1;
+        background: $surface;
+        margin: 0 0 1 0;
+        padding: 1 2;
+        width: 100%;
+        height: auto;
+    }
+    Card > Label {
+        margin-bottom: 1;
+    }
+    """
+
+
+class Spacer(Static):
+    """Flexible vertical spacer."""
+
+    DEFAULT_CSS = """
+    Spacer {
+        height: 1;
+    }
+    """
+
+
+# ── Screens ─────────────────────────────────────────────────────────
+
+class MainScreen(Screen):
+    """Database type selection screen."""
+
+    DEFAULT_CSS = """
+    MainScreen > Vertical {
+        align: center top;
+        width: 48;
+        height: auto;
+        margin: 1 2;
+    }
+
+    #hero {
+        padding: 1 0;
+        width: 100%;
+        height: auto;
+    }
+
+    #hero-title {
+        content-align: center middle;
+        text-style: bold;
+        color: $primary-lighten-2;
+        width: 100%;
+    }
+
+    #hero-sub {
+        content-align: center middle;
+        color: $text-muted;
+        width: 100%;
+    }
+
+    .section-label {
+        text-style: bold;
+        color: $text;
+        padding: 0 0 0 0;
+        margin: 1 0 0 0;
+    }
+
+    RadioSet {
+        margin: 0 0 1 0;
+        width: 100%;
+    }
+
+    RadioButton {
+        padding: 1 2;
+    }
+
+    RadioButton:hover {
+        background: $primary 20%;
+    }
+
+    RadioButton.-selected {
+        background: $primary 30%;
+        color: $primary-lighten-2;
+        text-style: bold;
+    }
+
+    #error-msg {
+        color: $error;
+        margin: 0 0 1 0;
+    }
+
+    .action-row {
+        align: center middle;
+        height: auto;
+        margin: 1 0 0 0;
+    }
+
+    #btn-next {
+        min-width: 20;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield DexcelHeader()
+        with Vertical():
+            with Vertical(id="hero"):
+                yield Label("Database Schema → Excel", id="hero-title")
+                yield Label("Export any database schema to a formatted Excel file",
+                            id="hero-sub")
+            yield Label("Choose your database type", classes="section-label")
+            yield Spacer()
             with RadioSet(id="db-type"):
                 for key, name in DB_TYPES_ORDERED:
-                    yield RadioButton(name, id=key)
-            yield Static("", id="main-error")
-            yield Button("Next", variant="primary", id="next", disabled=True)
-        yield Footer()
+                    yield RadioButton(f" {DB_ICONS.get(key, '')}  {name}", id=key)
+            yield Label("", id="error-msg")
+            with Horizontal(classes="action-row"):
+                yield Button("Next →", variant="primary", id="btn-next", disabled=True)
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
         self.app.driver = event.pressed.id
-        self.query_one("#next", Button).disabled = False
-        self.query_one("#main-error", Static).update("")
+        self.query_one("#btn-next", Button).disabled = False
+        self.query_one("#error-msg", Static).update("")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "next":
-            if not self.app.driver:
+        if event.button.id == "btn-next":
+            d = self.app.driver
+            if not d:
                 return
-            if self.app.driver == "sqlite":
+            self.app.sub_title = dict(DB_TYPES_ORDERED).get(d, d)
+            if d == "sqlite":
                 self.app.push_screen(SQLiteScreen())
             else:
                 self.app.push_screen(NetScreen())
@@ -425,16 +555,59 @@ class MainScreen(Screen):
 class SQLiteScreen(Screen):
     """Connection details for SQLite."""
 
+    DEFAULT_CSS = """
+    SQLiteScreen > Vertical {
+        align: center top;
+        width: 48;
+        height: auto;
+        margin: 1 2;
+    }
+
+    .screen-title {
+        content-align: center middle;
+        text-style: bold;
+        width: 100%;
+        margin: 0 0 1 0;
+    }
+
+    Input {
+        margin: 0 0 1 0;
+        width: 100%;
+    }
+
+    Input:focus {
+        border: tall $primary;
+    }
+
+    .error-msg {
+        color: $error;
+        margin: 0 0 1 0;
+    }
+
+    .button-row {
+        align: center middle;
+        height: auto;
+        margin: 1 0 0 0;
+    }
+
+    .button-row Button {
+        margin: 0 1;
+        min-width: 14;
+    }
+    """
+
     def compose(self) -> ComposeResult:
-        yield Header()
-        with Vertical(classes="screen-content"):
-            yield Label("SQLite Connection", id="form-title")
-            yield Input(placeholder="Path to .db or .sqlite file", id="db-path")
+        yield DexcelHeader()
+        with Vertical():
+            yield Label("SQLite Connection", classes="screen-title")
+            yield Card(
+                Label("Database file"),
+                Input(placeholder="e.g. /path/to/database.db", id="db-path"),
+            )
             yield Label("", id="sqlite-error", classes="error-msg")
             with Horizontal(classes="button-row"):
-                yield Button("Back", id="back")
+                yield Button("← Back", id="back")
                 yield Button("Connect", variant="primary", id="connect")
-        yield Footer()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "back":
@@ -442,12 +615,10 @@ class SQLiteScreen(Screen):
         elif event.button.id == "connect":
             path = self.query_one("#db-path", Input).value.strip()
             if not path:
-                self.query_one("#sqlite-error", Static).update(
-                    "Please enter a file path."
-                )
+                self.query_one("#sqlite-error", Static).update("Please enter a file path.")
                 return
             if not os.path.isfile(path):
-                self.query_one("#sqlite-error", Static).update("File not found.")
+                self.query_one("#sqlite-error", Static).update(f"File not found: {path}")
                 return
             self.app.db_params = {"path": path}
             self.app.push_screen(ExportScreen())
@@ -456,20 +627,66 @@ class SQLiteScreen(Screen):
 class NetScreen(Screen):
     """Connection details for network databases."""
 
+    DEFAULT_CSS = """
+    NetScreen > Vertical {
+        align: center top;
+        width: 48;
+        height: auto;
+        margin: 1 2;
+    }
+
+    .screen-title {
+        content-align: center middle;
+        text-style: bold;
+        width: 100%;
+        margin: 0 0 1 0;
+    }
+
+    Input {
+        margin: 0 0 1 0;
+        width: 100%;
+    }
+
+    Input:focus {
+        border: tall $primary;
+    }
+
+    .error-msg {
+        color: $error;
+        margin: 0 0 1 0;
+    }
+
+    .button-row {
+        align: center middle;
+        height: auto;
+        margin: 1 0 0 0;
+    }
+
+    .button-row Button {
+        margin: 0 1;
+        min-width: 14;
+    }
+    """
+
     def compose(self) -> ComposeResult:
-        yield Header()
-        with Vertical(classes="screen-content"):
-            yield Label("Connection Details", id="form-title")
-            yield Input(placeholder="Host", id="host")
-            yield Input(placeholder="Port", id="port")
-            yield Input(placeholder="Username", id="username")
-            yield Input(placeholder="Password", id="password", password=True)
-            yield Input(placeholder="Database name", id="database")
+        yield DexcelHeader()
+        with Vertical():
+            yield Label("Connection Details", classes="screen-title")
+            with Card():
+                yield Label("Server")
+                yield Input(placeholder="Host", id="host")
+                yield Input(placeholder="Port", id="port")
+            with Card():
+                yield Label("Authentication")
+                yield Input(placeholder="Username", id="username")
+                yield Input(placeholder="Password", id="password", password=True)
+            with Card():
+                yield Label("Database")
+                yield Input(placeholder="Database name", id="database")
             yield Label("", id="net-error", classes="error-msg")
             with Horizontal(classes="button-row"):
-                yield Button("Back", id="back")
+                yield Button("← Back", id="back")
                 yield Button("Connect", variant="primary", id="connect")
-        yield Footer()
 
     def on_mount(self) -> None:
         driver = self.app.driver
@@ -494,7 +711,7 @@ class NetScreen(Screen):
             missing = [k for k, v in fields.items() if not v]
             if missing:
                 self.query_one("#net-error", Static).update(
-                    f"Missing required fields: {', '.join(missing)}"
+                    f"Missing required: {', '.join(missing)}"
                 )
                 return
             self.app.db_params = fields
@@ -504,17 +721,83 @@ class NetScreen(Screen):
 class ExportScreen(Screen):
     """Export progress and result display."""
 
+    DEFAULT_CSS = """
+    ExportScreen > Vertical {
+        align: center top;
+        width: 52;
+        height: auto;
+        margin: 1 2;
+    }
+
+    .screen-title {
+        content-align: center middle;
+        text-style: bold;
+        width: 100%;
+        margin: 0 0 1 0;
+    }
+
+    RichLog {
+        border: round $primary;
+        background: $surface;
+        height: 60%;
+        min-height: 12;
+        margin: 0 0 1 0;
+        width: 100%;
+    }
+
+    #file-link {
+        background: $success 10%;
+        border: tall $success;
+        color: $success;
+        text-style: bold;
+        padding: 1 2;
+        margin: 0 0 1 0;
+        width: 100%;
+    }
+
+    #file-link Link {
+        color: $success-lighten-2;
+        text-style: underline;
+    }
+
+    #error-box {
+        background: $error 10%;
+        border: tall $error;
+        color: $error;
+        padding: 1 2;
+        margin: 0 0 1 0;
+        width: 100%;
+    }
+
+    .button-row {
+        align: center middle;
+        height: auto;
+        margin: 1 0 0 0;
+    }
+
+    .button-row Button {
+        margin: 0 1;
+        min-width: 14;
+    }
+
+    .spinner {
+        content-align: center middle;
+        width: 100%;
+        height: 1;
+    }
+    """
+
     def compose(self) -> ComposeResult:
-        yield Header()
-        with Vertical(classes="screen-content"):
-            yield Label("Export Progress", id="progress-title")
+        yield DexcelHeader()
+        with Vertical():
+            yield Label("Export Progress", classes="screen-title")
+            yield Static("⏳  Working...", id="spinner")
             yield RichLog(id="log", highlight=True, markup=True)
             yield Static("", id="file-link")
             with Horizontal(classes="button-row"):
                 yield Button("Cancel", id="cancel")
                 yield Button("Open in Folder", id="open-folder", disabled=True)
-                yield Button("Exit", id="exit", variant="primary", disabled=True)
-        yield Footer()
+                yield Button("Exit", variant="primary", id="exit", disabled=True)
 
     def on_mount(self) -> None:
         self.run_export()
@@ -538,15 +821,15 @@ class ExportScreen(Screen):
             conn, db_name = build_connection(self.app.driver, **self.app.db_params)
             self.app.conn = conn
             self.app.db_name = db_name
-            log("[green]Connected successfully.[/green]")
+            log("[green]✔ Connected successfully.[/green]")
 
             log("[bold]Listing tables...[/bold]")
             tables = list_tables(conn, self.app.driver)
-            log(f"Found {len(tables)} table(s).")
+            log(f"[cyan]Found {len(tables)} table(s).[/cyan]")
 
             if not tables:
                 log("[yellow]No tables found in this database.[/yellow]")
-                self.call_from_thread(self._finish, False)
+                self.call_from_thread(self._finish_empty)
                 return
 
             output_file = f"{db_name}_table_descriptions.xlsx"
@@ -554,22 +837,22 @@ class ExportScreen(Screen):
             self.app.output_file = output_path
 
             if os.path.exists(output_path):
-                log(f"[yellow]File exists, will overwrite: {output_path}[/yellow]")
+                log(f"[yellow]⚠ File exists — will overwrite[/yellow]")
 
-            log(f"Output: {output_path}")
+            log(f"Output: [bold]{output_path}[/bold]")
 
             def on_progress(msg: str) -> None:
-                self.call_from_thread(self._append_log, msg)
+                self.call_from_thread(self._append_log, f"  {msg}")
 
             export_to_excel(conn, self.app.driver, tables, output_path, on_progress)
 
-            log("[bold green]Export complete![/bold green]")
-            self.call_from_thread(self._finish, True, output_path)
+            log(f"[bold green]✔ Export complete![/bold green]")
+            self.call_from_thread(self._finish_success, output_path)
 
         except Exception as e:
-            log(f"[red]Error: {e}[/red]")
+            log(f"[red]✘ Error: {e}[/red]")
             logger.error("Export failed: %s", traceback.format_exc())
-            self.call_from_thread(self._finish, False, error=str(e))
+            self.call_from_thread(self._finish_error, str(e))
         finally:
             try:
                 if hasattr(self.app, "conn") and self.app.conn:
@@ -580,100 +863,64 @@ class ExportScreen(Screen):
     def _append_log(self, message: str) -> None:
         self.query_one("#log", RichLog).write(message)
 
-    def _finish(self, success: bool, file_path: Optional[str] = None,
-                error: Optional[str] = None) -> None:
+    def _finish_success(self, file_path: str) -> None:
+        self.query_one("#spinner", Static).update("[bold green]✔ Done![/bold green]")
         self.query_one("#cancel", Button).disabled = True
+        self.query_one("#exit", Button).disabled = False
+        self.query_one("#open-folder", Button).disabled = False
+        self.query_one("#file-link", Static).update(
+            f"[b]File saved:[/b]  [link=file://{file_path}]{file_path}[/link]\n"
+            f"[dim]Click the link above or press [b]Open in Folder[/b] to reveal it.[/dim]"
+        )
 
-        if success and file_path:
-            self.query_one("#open-folder", Button).disabled = False
-            self.query_one("#exit", Button).disabled = False
-            self.query_one("#file-link", Static).update(
-                f"[bold]File saved:[/bold] [link=file://{file_path}]"
-                f"{file_path}[/link]"
-            )
-            self.query_one("#file-link", Static).styles.margin = (1, 0)
-        elif error:
-            self.query_one("#exit", Button).disabled = False
-            self.query_one("#file-link", Static).update(
-                f"[red]Failed: {error}[/red]"
-            )
-        else:
-            self.query_one("#exit", Button).disabled = False
+    def _finish_error(self, error: str) -> None:
+        self.query_one("#spinner", Static).update("[red]✘ Failed[/red]")
+        self.query_one("#cancel", Button).disabled = True
+        self.query_one("#exit", Button).disabled = False
+        self.query_one("#file-link", Static).update(
+            f"[b red]Error:[/b red] {error}"
+        )
+        self.query_one("#file-link", Static).id = "error-box"
+
+    def _finish_empty(self) -> None:
+        self.query_one("#spinner", Static).update("[yellow]⚠ No tables[/yellow]")
+        self.query_one("#cancel", Button).disabled = True
+        self.query_one("#exit", Button).disabled = False
+        self.query_one("#file-link", Static).update(
+            "[yellow]No tables found in the selected database.[/yellow]"
+        )
 
 
 # ── App ──────────────────────────────────────────────────────────────
 
 class DexcelApp(App):
-    TITLE = "Dexcel"
+    TITLE = "Dexcel — Database Schema Exporter"
+    SUB_TITLE = ""
+
     CSS = """
     Screen {
-        align: center middle;
+        background: $surface-darken-1;
     }
 
-    .screen-content {
-        width: 50;
-        height: auto;
-        margin: 1 2;
-    }
-
-    #app-title {
-        content-align: center middle;
+    Button {
         text-style: bold;
-        width: 100%;
-        padding: 1 0;
     }
 
-    #app-subtitle {
-        content-align: center middle;
-        width: 100%;
-        margin-bottom: 1;
+    Button:hover {
+        text-style: bold reverse;
     }
 
-    #form-title, #progress-title {
-        content-align: center middle;
-        text-style: bold;
-        width: 100%;
-        margin: 1 0;
+    Button:disabled {
+        opacity: 0.4;
     }
 
-    RadioSet {
-        margin: 1 0;
-        width: 100%;
+    Button.-primary {
+        background: $primary;
+        color: $text;
     }
 
-    Input {
-        margin: 0 0 1 0;
-        width: 100%;
-    }
-
-    .button-row {
-        align: center middle;
-        height: auto;
-    }
-
-    .button-row Button {
-        margin: 0 1;
-        min-width: 16;
-    }
-
-    RichLog {
-        border: solid $primary;
-        height: 60%;
-        margin: 0 0 1 0;
-        width: 100%;
-    }
-
-    #file-link {
-        margin: 0 0 1 0;
-    }
-
-    .error-msg {
-        color: $error;
-        margin: 0 0 1 0;
-    }
-
-    #main-error {
-        color: $error;
+    Button.-primary:hover {
+        background: $primary-lighten-1;
     }
     """
 
