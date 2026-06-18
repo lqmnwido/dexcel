@@ -51,26 +51,15 @@ dexcel
 
 ## Example
 
-```txt
-=== Dexcel: Database Schema Description Exporter ===
-
-Select database type:
-  1. MySQL / MariaDB
-  2. PostgreSQL
-  3. SQLite
-  4. Microsoft SQL Server
-  5. Oracle
-
-Enter choice number:
-```
-
-Then enter your database connection details.
+`dexcel` opens a terminal database reader form. Choose a database type, fill in the connection details, then approve the describe action to start the export.
 
 Dexcel will export your database table descriptions into an Excel file, for example:
 
 ```txt
 mypelantikan_table_descriptions.xlsx
 ```
+
+After the export finishes, the saved file path is shown in the app and can be clicked to open the folder containing the Excel file.
 
 ---
 

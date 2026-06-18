@@ -367,7 +367,8 @@ class MainScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Static("Dexcel — Database Schema Exporter", id="titlebar")
         with Vertical():
-            yield Label("Select a database type:")
+            yield Label("Database Reader", id="screen-title")
+            yield Label("Select a database type to describe.")
             with RadioSet(id="db-type"):
                 for key, name in DB_TYPES_ORDERED:
                     yield RadioButton(f"{name}", id=key)
@@ -391,12 +392,13 @@ class SQLiteScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Static("Dexcel — Database Schema Exporter", id="titlebar")
         with Vertical():
-            yield Label("SQLite Database File")
+            yield Label("SQLite Database File", id="screen-title")
+            yield Label("Path")
             yield Input(placeholder="Path to .db or .sqlite file", id="db-path")
             yield Label("", id="sqlite-error")
             with Horizontal():
-                yield Button("Back", id="back")
-                yield Button("Connect", variant="primary", id="connect")
+                yield Button("Cancel", id="back")
+                yield Button("Approve Describe", variant="primary", id="connect")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "back":
@@ -417,18 +419,21 @@ class NetScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Static("Dexcel — Database Schema Exporter", id="titlebar")
         with Vertical():
-            yield Label("Server")
+            yield Label("Database Connection", id="screen-title")
+            yield Label("Host")
             yield Input(placeholder="Host", id="host")
+            yield Label("Port")
             yield Input(placeholder="Port", id="port")
-            yield Label("Authentication")
+            yield Label("Username")
             yield Input(placeholder="Username", id="username")
+            yield Label("Password")
             yield Input(placeholder="Password", id="password", password=True)
-            yield Label("Database")
-            yield Input(placeholder="Database name", id="database")
+            yield Label("Dataname")
+            yield Input(placeholder="Dataname / Database name", id="database")
             yield Label("", id="net-error")
             with Horizontal():
-                yield Button("Back", id="back")
-                yield Button("Connect", variant="primary", id="connect")
+                yield Button("Cancel", id="back")
+                yield Button("Approve Describe", variant="primary", id="connect")
 
     def on_mount(self) -> None:
         driver = self.app.driver
@@ -466,10 +471,10 @@ class ExportScreen(Screen):
         with Vertical():
             yield Label("Export Progress")
             yield RichLog(id="log", highlight=True, markup=True)
-            yield Static("", id="file-link")
+            yield Label("Saved Excel file")
+            yield Button("Waiting for export...", id="file-link", disabled=True)
             with Horizontal():
                 yield Button("Cancel", id="cancel")
-                yield Button("Open in Folder", id="open-folder", disabled=True)
                 yield Button("Exit", variant="primary", id="exit", disabled=True)
 
     def on_mount(self) -> None:
@@ -480,7 +485,7 @@ class ExportScreen(Screen):
             self.app.pop_screen()
         elif event.button.id == "exit":
             self.app.exit()
-        elif event.button.id == "open-folder":
+        elif event.button.id == "file-link":
             if self.app.output_file:
                 open_file_location(self.app.output_file)
 
@@ -542,18 +547,19 @@ class ExportScreen(Screen):
 
         if success and file_path:
             self.query_one("#exit", Button).disabled = False
-            self.query_one("#open-folder", Button).disabled = False
-            self.query_one("#file-link", Static).update(
-                f"File saved:\n"
-                f"{file_path}"
-            )
+            file_link = self.query_one("#file-link", Button)
+            file_link.disabled = False
+            file_link.label = file_path
         elif error:
             self.query_one("#exit", Button).disabled = False
-            self.query_one("#file-link", Static).update(
-                f"Error: {error}"
-            )
+            file_link = self.query_one("#file-link", Button)
+            file_link.label = "Export failed. Check the log above."
+            file_link.disabled = True
         else:
             self.query_one("#exit", Button).disabled = False
+            file_link = self.query_one("#file-link", Button)
+            file_link.label = "Waiting for export..."
+            file_link.disabled = True
 
 
 # ── App ──────────────────────────────────────────────────────────────
@@ -562,9 +568,13 @@ class DexcelApp(App):
     """Dexcel — Database Schema Exporter"""
 
     CSS = """
+    Screen {
+        background: #191d28;
+    }
+
     #titlebar {
-        background: $primary;
-        color: $text;
+        background: #7c5cff;
+        color: #ffffff;
         text-style: bold;
         height: 1;
         content-align: center middle;
@@ -573,12 +583,22 @@ class DexcelApp(App):
 
     Vertical {
         align: center top;
-        width: 50;
+        width: 76;
         height: auto;
         margin: 1 2;
+        padding: 1 2;
+        border: round #394056;
+        background: #222836;
     }
 
     Input {
+        margin: 0 0 1 0;
+        width: 100%;
+    }
+
+    #screen-title {
+        text-style: bold;
+        color: #f2f4ff;
         margin: 0 0 1 0;
     }
 
@@ -586,6 +606,8 @@ class DexcelApp(App):
         height: 60%;
         min-height: 10;
         margin: 0 0 1 0;
+        border: round #394056;
+        background: #111521;
     }
 
     Horizontal {
@@ -598,6 +620,16 @@ class DexcelApp(App):
         margin: 0 1;
         min-width: 14;
     }
+
+    #file-link {
+        width: 100%;
+    }
+
+    #net-error,
+    #sqlite-error {
+        color: #ff8a8a;
+        margin: 0 0 1 0;
+    }
     """
 
     def __init__(self):
@@ -607,6 +639,9 @@ class DexcelApp(App):
         self.conn = None
         self.db_name = None
         self.output_file = None
+
+    def on_mount(self) -> None:
+        self.push_screen(MainScreen())
 
 
 def main():
