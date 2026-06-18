@@ -1,35 +1,33 @@
 #!/usr/bin/env python3
 """
-db_to_excel.py
+Dexcel — Database Schema Description Exporter
 
-Interactive CLI tool to export an entire database to a single Excel file
-(one sheet per table), with auto-sized columns.
+Exports an entire database schema into a text file like:
 
-Supports: MySQL, PostgreSQL, SQLite, Microsoft SQL Server, Oracle.
++--------------+
+| TABLE: users |
++--------------+
++------------+--------------+------+-----+---------+----------------+
+| Field      | Type         | Null | Key | Default | Extra          |
++------------+--------------+------+-----+---------+----------------+
+
+Supports:
+- MySQL / MariaDB
+- PostgreSQL
+- SQLite
+- Microsoft SQL Server
+- Oracle
 
 Usage:
     dexcel
-
-You will be prompted for the connection type and connection details.
-Password input is hidden.
-
-All activity is logged to logs/dexcel_<timestamp>.log for troubleshooting.
 """
+
 import sys
 import os
-import re
 import getpass
 import logging
 import traceback
 from datetime import datetime
-
-try:
-    import pandas as pd
-    from openpyxl.utils import get_column_letter
-except ImportError as e:
-    print(f"FATAL: required package not found ({e}).")
-    print("Reinstall Dexcel and try again.")
-    sys.exit(1)
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -55,10 +53,6 @@ _console_handler.setFormatter(logging.Formatter("%(message)s"))
 logger.addHandler(_console_handler)
 
 
-def redact(value):
-    return "*" * len(value) if value else ""
-
-
 DB_TYPES = {
     "1": {"name": "MySQL / MariaDB", "driver": "mysql"},
     "2": {"name": "PostgreSQL", "driver": "postgresql"},
@@ -75,6 +69,10 @@ DEFAULT_PORTS = {
 }
 
 MAX_RETRIES = 3
+
+
+def redact(value):
+    return "*" * len(value) if value else ""
 
 
 def ask(prompt, default=None, required=True):
@@ -246,194 +244,337 @@ def build_connection(db_info):
 def list_tables(conn, driver):
     cursor = conn.cursor()
 
-    try:
-        if driver == "mysql":
-            cursor.execute("SHOW TABLES")
-
-        elif driver == "postgresql":
-            cursor.execute(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = 'public' "
-                "AND table_type = 'BASE TABLE'"
-            )
-
-        elif driver == "sqlite":
-            cursor.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type = 'table' "
-                "AND name NOT LIKE 'sqlite_%'"
-            )
-
-        elif driver == "mssql":
-            cursor.execute(
-                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
-                "WHERE TABLE_TYPE = 'BASE TABLE'"
-            )
-
-        elif driver == "oracle":
-            cursor.execute("SELECT table_name FROM user_tables")
-
-        else:
-            raise ValueError(f"Unsupported driver: {driver}")
-
-        tables = [row[0] for row in cursor.fetchall()]
-        logger.info("Found %d table(s): %s", len(tables), tables)
-
-        return tables
-
-    except Exception as e:
-        logger.critical("Failed to list tables: %s", e)
-        raise
-
-
-def quote_identifier(name, driver):
     if driver == "mysql":
-        return f"`{name}`"
+        cursor.execute("SHOW FULL TABLES WHERE Table_type = 'BASE TABLE'")
+        return [row[0] for row in cursor.fetchall()]
 
-    if driver in ("postgresql", "sqlite", "oracle"):
-        return f'"{name}"'
+    if driver == "postgresql":
+        cursor.execute(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+            AND table_type = 'BASE TABLE'
+            ORDER BY table_name
+            """
+        )
+        return [row[0] for row in cursor.fetchall()]
+
+    if driver == "sqlite":
+        cursor.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+            AND name NOT LIKE 'sqlite_%'
+            ORDER BY name
+            """
+        )
+        return [row[0] for row in cursor.fetchall()]
 
     if driver == "mssql":
-        return f"[{name}]"
+        cursor.execute(
+            """
+            SELECT TABLE_NAME
+            FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_TYPE = 'BASE TABLE'
+            ORDER BY TABLE_NAME
+            """
+        )
+        return [row[0] for row in cursor.fetchall()]
 
-    return name
+    if driver == "oracle":
+        cursor.execute("SELECT table_name FROM user_tables ORDER BY table_name")
+        return [row[0] for row in cursor.fetchall()]
 
-
-def sanitize_sheet_name(name, used_names):
-    sheet_name = str(name)[:31]
-
-    for bad_char in ["\\", "/", "*", "?", ":", "[", "]"]:
-        sheet_name = sheet_name.replace(bad_char, "_")
-
-    if not sheet_name:
-        sheet_name = "sheet"
-
-    original = sheet_name
-    counter = 1
-
-    while sheet_name in used_names:
-        suffix = f"_{counter}"
-        sheet_name = original[: 31 - len(suffix)] + suffix
-        counter += 1
-
-    used_names.add(sheet_name)
-
-    return sheet_name
-
-ILLEGAL_EXCEL_CHARS_RE = re.compile(r"[\x00-\x08\x0B-\x0C\x0E-\x1F]")
+    raise ValueError(f"Unsupported driver: {driver}")
 
 
-def clean_excel_value(value):
+def get_table_description(conn, driver, table):
     """
-    Excel cannot store some control characters.
-    Laravel/PHP serialized objects can contain null bytes, especially for
-    protected/private properties. Remove those characters before writing.
+    Return rows in this common format:
+
+    [
+        {
+            "Field": "...",
+            "Type": "...",
+            "Null": "...",
+            "Key": "...",
+            "Default": "...",
+            "Extra": "...",
+        }
+    ]
     """
-    if isinstance(value, str):
-        return ILLEGAL_EXCEL_CHARS_RE.sub("", value)
+    cursor = conn.cursor()
 
-    return value
+    if driver == "mysql":
+        cursor.execute(f"DESCRIBE `{table}`")
+        rows = cursor.fetchall()
 
+        return [
+            {
+                "Field": row[0],
+                "Type": row[1],
+                "Null": row[2],
+                "Key": row[3],
+                "Default": "NULL" if row[4] is None else row[4],
+                "Extra": row[5],
+            }
+            for row in rows
+        ]
 
-def clean_dataframe_for_excel(df):
-    """
-    Clean only object/string columns before writing to Excel.
-    """
-    object_columns = df.select_dtypes(include=["object"]).columns
-
-    for column in object_columns:
-        df[column] = df[column].map(clean_excel_value)
-
-    return df
-
-def export_to_excel(conn, driver, tables, output_file):
-    used_sheet_names = set()
-    exported_count = 0
-    skipped_tables = []
-
-    base, ext = os.path.splitext(output_file)
-
-    if not ext:
-        ext = ".xlsx"
-
-    tmp_output = f"{base}.tmp{ext}"
-
-    try:
-        with pd.ExcelWriter(tmp_output, engine="openpyxl") as writer:
-            for table in tables:
-                print(f"Exporting table: {table}")
-                logger.info("Exporting table: %s", table)
-
-                quoted = quote_identifier(table, driver)
-                query = f"SELECT * FROM {quoted}"
-
-                try:
-                    df = pd.read_sql(query, conn)
-                    df = clean_dataframe_for_excel(df)
-                except Exception as e:
-                    logger.error("Failed to read/clean table '%s': %s", table, e)
-                    print(f"  Skipped '{table}' due to error: {e}")
-                    skipped_tables.append(table)
-                    continue
-
-                sheet_name = sanitize_sheet_name(table, used_sheet_names)
-
-                try:
-                    df.to_excel(writer, sheet_name=sheet_name, index=False)
-                except Exception as e:
-                    logger.error("Failed to write table '%s' to Excel: %s", table, e)
-                    print(f"  Skipped '{table}' due to Excel write error: {e}")
-                    skipped_tables.append(table)
-                    continue
-                worksheet = writer.sheets[sheet_name]
-
-                for column_cells in worksheet.columns:
-                    max_length = 0
-                    column_letter = get_column_letter(column_cells[0].column)
-
-                    for cell in column_cells:
-                        try:
-                            if cell.value is not None:
-                                max_length = max(max_length, len(str(cell.value)))
-                        except Exception:
-                            pass
-
-                    worksheet.column_dimensions[column_letter].width = min(
-                        max_length + 2,
-                        50,
-                    )
-
-                exported_count += 1
-
-        if exported_count == 0:
-            logger.error("No tables were exported successfully.")
-            os.remove(tmp_output)
-            print("\nNo tables could be exported. No output file was created.")
-            sys.exit(1)
-
-        os.replace(tmp_output, output_file)
-
-        logger.info(
-            "Export finished. %d exported, %d skipped: %s",
-            exported_count,
-            len(skipped_tables),
-            skipped_tables,
+    if driver == "postgresql":
+        cursor.execute(
+            """
+            SELECT
+                c.column_name,
+                c.data_type,
+                c.is_nullable,
+                CASE
+                    WHEN pk.column_name IS NOT NULL THEN 'PRI'
+                    ELSE ''
+                END AS column_key,
+                c.column_default,
+                CASE
+                    WHEN c.column_default LIKE 'nextval%%' THEN 'auto_increment'
+                    ELSE ''
+                END AS extra
+            FROM information_schema.columns c
+            LEFT JOIN (
+                SELECT ku.table_name, ku.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage ku
+                    ON tc.constraint_name = ku.constraint_name
+                WHERE tc.constraint_type = 'PRIMARY KEY'
+                  AND ku.table_schema = 'public'
+            ) pk
+              ON c.table_name = pk.table_name
+             AND c.column_name = pk.column_name
+            WHERE c.table_schema = 'public'
+              AND c.table_name = %s
+            ORDER BY c.ordinal_position
+            """,
+            (table,),
         )
 
-    except Exception:
-        logger.critical("Fatal error during export:\n%s", traceback.format_exc())
+        return [
+            {
+                "Field": row[0],
+                "Type": row[1],
+                "Null": "YES" if row[2] == "YES" else "NO",
+                "Key": row[3] or "",
+                "Default": "NULL" if row[4] is None else row[4],
+                "Extra": row[5] or "",
+            }
+            for row in cursor.fetchall()
+        ]
 
-        if os.path.exists(tmp_output):
-            os.remove(tmp_output)
+    if driver == "sqlite":
+        cursor.execute(f'PRAGMA table_info("{table}")')
+        rows = cursor.fetchall()
 
-        raise
+        return [
+            {
+                "Field": row[1],
+                "Type": row[2],
+                "Null": "NO" if row[3] else "YES",
+                "Key": "PRI" if row[5] else "",
+                "Default": "NULL" if row[4] is None else row[4],
+                "Extra": "",
+            }
+            for row in rows
+        ]
 
-    return exported_count, skipped_tables
+    if driver == "mssql":
+        cursor.execute(
+            """
+            SELECT
+                c.COLUMN_NAME,
+                c.DATA_TYPE +
+                    CASE
+                        WHEN c.CHARACTER_MAXIMUM_LENGTH IS NOT NULL
+                            THEN '(' + CAST(c.CHARACTER_MAXIMUM_LENGTH AS VARCHAR) + ')'
+                        ELSE ''
+                    END AS column_type,
+                c.IS_NULLABLE,
+                CASE
+                    WHEN pk.COLUMN_NAME IS NOT NULL THEN 'PRI'
+                    ELSE ''
+                END AS column_key,
+                c.COLUMN_DEFAULT,
+                CASE
+                    WHEN COLUMNPROPERTY(
+                        OBJECT_ID(c.TABLE_SCHEMA + '.' + c.TABLE_NAME),
+                        c.COLUMN_NAME,
+                        'IsIdentity'
+                    ) = 1 THEN 'auto_increment'
+                    ELSE ''
+                END AS extra
+            FROM INFORMATION_SCHEMA.COLUMNS c
+            LEFT JOIN (
+                SELECT ku.TABLE_NAME, ku.COLUMN_NAME
+                FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+                JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE ku
+                    ON tc.CONSTRAINT_NAME = ku.CONSTRAINT_NAME
+                WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+            ) pk
+              ON c.TABLE_NAME = pk.TABLE_NAME
+             AND c.COLUMN_NAME = pk.COLUMN_NAME
+            WHERE c.TABLE_NAME = ?
+            ORDER BY c.ORDINAL_POSITION
+            """,
+            table,
+        )
+
+        return [
+            {
+                "Field": row[0],
+                "Type": row[1],
+                "Null": "YES" if row[2] == "YES" else "NO",
+                "Key": row[3] or "",
+                "Default": "NULL" if row[4] is None else row[4],
+                "Extra": row[5] or "",
+            }
+            for row in cursor.fetchall()
+        ]
+
+    if driver == "oracle":
+        cursor.execute(
+            """
+            SELECT
+                c.column_name,
+                c.data_type ||
+                    CASE
+                        WHEN c.data_type IN ('VARCHAR2', 'CHAR', 'NVARCHAR2', 'NCHAR')
+                            THEN '(' || c.data_length || ')'
+                        WHEN c.data_type = 'NUMBER' AND c.data_precision IS NOT NULL
+                            THEN '(' || c.data_precision || ',' || c.data_scale || ')'
+                        ELSE ''
+                    END AS column_type,
+                c.nullable,
+                CASE
+                    WHEN pk.column_name IS NOT NULL THEN 'PRI'
+                    ELSE ''
+                END AS column_key,
+                c.data_default,
+                ''
+            FROM user_tab_columns c
+            LEFT JOIN (
+                SELECT cols.table_name, cols.column_name
+                FROM user_constraints cons
+                JOIN user_cons_columns cols
+                    ON cons.constraint_name = cols.constraint_name
+                WHERE cons.constraint_type = 'P'
+            ) pk
+              ON c.table_name = pk.table_name
+             AND c.column_name = pk.column_name
+            WHERE c.table_name = :table_name
+            ORDER BY c.column_id
+            """,
+            table_name=table.upper(),
+        )
+
+        return [
+            {
+                "Field": row[0],
+                "Type": row[1],
+                "Null": "YES" if row[2] == "Y" else "NO",
+                "Key": row[3] or "",
+                "Default": "NULL" if row[4] is None else str(row[4]).strip(),
+                "Extra": row[5] or "",
+            }
+            for row in cursor.fetchall()
+        ]
+
+    raise ValueError(f"Unsupported driver: {driver}")
+
+
+def make_box_line(widths):
+    return "+" + "+".join("-" * (width + 2) for width in widths) + "+"
+
+
+def make_box_row(values, widths):
+    cells = []
+
+    for value, width in zip(values, widths):
+        text = "" if value is None else str(value)
+        cells.append(" " + text.ljust(width) + " ")
+
+    return "|" + "|".join(cells) + "|"
+
+
+def render_table_box(headers, rows):
+    normalized_rows = []
+
+    for row in rows:
+        normalized_rows.append([row.get(header, "") for header in headers])
+
+    widths = []
+
+    for index, header in enumerate(headers):
+        max_width = len(header)
+
+        for row in normalized_rows:
+            max_width = max(max_width, len(str(row[index])))
+
+        widths.append(max_width)
+
+    output = []
+    line = make_box_line(widths)
+
+    output.append(line)
+    output.append(make_box_row(headers, widths))
+    output.append(line)
+
+    for row in normalized_rows:
+        output.append(make_box_row(row, widths))
+
+    output.append(line)
+
+    return "\n".join(output)
+
+
+def render_table_title(table_name):
+    title = f"TABLE: {table_name}"
+    width = len(title)
+
+    return "\n".join(
+        [
+            "+" + "-" * (width + 2) + "+",
+            "| " + title + " |",
+            "+" + "-" * (width + 2) + "+",
+        ]
+    )
+
+
+def export_schema_descriptions(conn, driver, tables, output_file):
+    headers = ["Field", "Type", "Null", "Key", "Default", "Extra"]
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        for index, table in enumerate(tables):
+            print(f"Describing table: {table}")
+            logger.info("Describing table: %s", table)
+
+            try:
+                rows = get_table_description(conn, driver, table)
+            except Exception as e:
+                logger.error("Failed to describe table '%s': %s", table, e)
+                f.write(render_table_title(table) + "\n")
+                f.write(f"ERROR: Failed to describe table: {e}\n\n")
+                continue
+
+            f.write(render_table_title(table) + "\n")
+            f.write(render_table_box(headers, rows) + "\n")
+
+            if index != len(tables) - 1:
+                f.write("\n")
+
+    logger.info("Schema description export finished: %s", output_file)
 
 
 def main():
-    print("=== Dexcel: Database to Excel Exporter ===")
-    logger.info("=== Dexcel session started ===")
+    print("=== Dexcel: Database Schema Description Exporter ===")
+    logger.info("=== Dexcel schema export session started ===")
 
     db_info = choose_db_type()
     driver = db_info["driver"]
@@ -455,10 +596,13 @@ def main():
 
         print(f"\nFound {len(tables)} table(s): {', '.join(tables)}")
 
-        output_file = ask("Output Excel filename", default=f"{db_name}_export.xlsx")
+        output_file = ask(
+            "Output schema filename",
+            default=f"{db_name}_table_descriptions.txt",
+        )
 
-        if not output_file.lower().endswith(".xlsx"):
-            output_file += ".xlsx"
+        if not output_file.lower().endswith(".txt"):
+            output_file += ".txt"
 
         if os.path.exists(output_file):
             overwrite = ask(
@@ -469,27 +613,13 @@ def main():
             if overwrite.lower() not in ("y", "yes"):
                 output_file = ask("Enter a different filename")
 
-                if not output_file.lower().endswith(".xlsx"):
-                    output_file += ".xlsx"
+                if not output_file.lower().endswith(".txt"):
+                    output_file += ".txt"
 
-        try:
-            exported_count, skipped_tables = export_to_excel(
-                conn,
-                driver,
-                tables,
-                output_file,
-            )
-        except Exception as e:
-            print(f"\nExport failed: {e}")
-            print(f"Details were written to: {LOG_FILE}")
-            sys.exit(1)
+        export_schema_descriptions(conn, driver, tables, output_file)
 
-        print(f"\nDone. Exported {exported_count} table(s) to {output_file}")
-
-        if skipped_tables:
-            print(f"Skipped {len(skipped_tables)} table(s): {', '.join(skipped_tables)}")
-
-        logger.info("=== Dexcel session finished successfully ===")
+        print(f"\nDone. Exported schema descriptions for {len(tables)} table(s) to {output_file}")
+        logger.info("=== Dexcel schema export session finished successfully ===")
 
     finally:
         try:
