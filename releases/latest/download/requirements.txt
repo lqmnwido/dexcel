@@ -1,7 +1,7 @@
+textual>=0.52.0
 pandas==2.2.2
 openpyxl==3.1.5
 PyMySQL==1.1.1
 psycopg2-binary==2.9.9
 pyodbc==5.1.0
 oracledb==2.4.1
-openpyxl==3.1.5
