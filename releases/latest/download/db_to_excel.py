@@ -7,14 +7,12 @@ import os
 import sys
 import platform
 import subprocess
+import importlib
 import logging
 import traceback
+import threading
 from datetime import datetime
 from typing import Optional
-
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
-from openpyxl.utils import get_column_letter
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -64,6 +62,15 @@ DEFAULT_PORTS = {
     "oracle": 1521,
 }
 
+DB_CONNECT_TIMEOUT = 5
+
+DRIVER_MODULES = {
+    "mysql": "pymysql",
+    "postgresql": "psycopg2",
+    "mssql": "pyodbc",
+    "oracle": "oracledb",
+}
+
 HEADERS = ["Field", "Type", "Null", "Key", "Default", "Extra"]
 
 
@@ -81,6 +88,26 @@ def open_file_location(filepath: str) -> None:
             subprocess.Popen(["xdg-open", os.path.dirname(filepath)])
     except Exception as e:
         logger.error("Failed to open file location: %s", e)
+
+
+def load_driver_module(driver: str):
+    module_name = DRIVER_MODULES.get(driver)
+    if not module_name:
+        raise ValueError(f"Unsupported driver: {driver}")
+    return importlib.import_module(module_name)
+
+
+def warm_driver_module(driver: str) -> None:
+    if driver not in DRIVER_MODULES:
+        return
+
+    def _load() -> None:
+        try:
+            load_driver_module(driver)
+        except Exception as exc:
+            logger.debug("Driver warmup failed for %s: %s", driver, exc)
+
+    threading.Thread(target=_load, daemon=True).start()
 
 
 # ── Database Functions ──────────────────────────────────────────────
@@ -107,20 +134,20 @@ def build_connection(driver: str, **params):
     )
 
     if driver == "mysql":
-        import pymysql
+        pymysql = load_driver_module(driver)
         conn = pymysql.connect(
             host=host, port=int(port), user=user, password=password,
-            database=database, charset="utf8mb4", connect_timeout=10,
+            database=database, charset="utf8mb4", connect_timeout=DB_CONNECT_TIMEOUT,
         )
     elif driver == "postgresql":
-        import psycopg2
+        psycopg2 = load_driver_module(driver)
         conn = psycopg2.connect(
             host=host, port=port, user=user, password=password,
-            dbname=database, connect_timeout=10,
+            dbname=database, connect_timeout=DB_CONNECT_TIMEOUT,
         )
     elif driver == "mssql":
         try:
-            import pyodbc
+            pyodbc = load_driver_module(driver)
         except ImportError:
             raise ImportError(
                 "SQL Server driver not available.\n"
@@ -131,9 +158,9 @@ def build_connection(driver: str, **params):
             f"SERVER={host},{port};DATABASE={database};"
             f"UID={user};PWD={password}"
         )
-        conn = pyodbc.connect(conn_str, timeout=10)
+        conn = pyodbc.connect(conn_str, timeout=DB_CONNECT_TIMEOUT)
     elif driver == "oracle":
-        import oracledb
+        oracledb = load_driver_module(driver)
         dsn = oracledb.makedsn(host, port, service_name=database)
         conn = oracledb.connect(user=user, password=password, dsn=dsn)
     else:
@@ -282,6 +309,10 @@ def get_table_description(conn, driver: str, table: str):
 
 def export_to_excel(conn, driver: str, tables, output_path: str,
                     on_progress=None) -> None:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+    from openpyxl.utils import get_column_letter
+
     wb = Workbook()
     ws = wb.active
     ws.title = "Table Descriptions"
@@ -377,6 +408,7 @@ class MainScreen(Screen):
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
         self.app.driver = event.pressed.id
+        warm_driver_module(event.pressed.id)
         self.query_one("#btn-next", Button).disabled = False
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
