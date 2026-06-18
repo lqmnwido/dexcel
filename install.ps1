@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 $ReleaseBaseUrl = $env:DEXCEL_RELEASE_URL
 
 if (-not $ReleaseBaseUrl) {
-    $ReleaseBaseUrl = "https://github.com/lqmnwido/dexcel/releases/latest/download"
+    $ReleaseBaseUrl = "https://dexcel.kohich.site/releases/latest/download"
 }
 
 $InstallDir = Join-Path $env:USERPROFILE ".dexcel"
