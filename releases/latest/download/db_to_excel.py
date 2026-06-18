@@ -1,15 +1,6 @@
 #!/usr/bin/env python3
 """
 Dexcel — Database Schema Description Exporter
-
-Exports an entire database schema into an Excel file.
-
-Supports:
-- MySQL / MariaDB
-- PostgreSQL
-- SQLite
-- Microsoft SQL Server
-- Oracle
 """
 
 import os
@@ -25,18 +16,14 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
-try:
-    from textual.app import App, ComposeResult
-    from textual.containers import Horizontal, Vertical
-    from textual.screen import Screen
-    from textual.widgets import (
-        Button, Input, Label,
-        RadioSet, RadioButton, RichLog, Static,
-    )
-    from textual import work
-except ImportError:
-    print("Error: Textual is required. Install with: pip install 'textual>=0.52.0'")
-    sys.exit(1)
+from textual.app import App, ComposeResult
+from textual.containers import Horizontal, Vertical
+from textual.screen import Screen
+from textual.widgets import (
+    Button, Input, Label,
+    RadioSet, RadioButton, RichLog, Static,
+)
+from textual import work
 
 
 # ── Logging ──────────────────────────────────────────────────────────
@@ -82,12 +69,7 @@ HEADERS = ["Field", "Type", "Null", "Key", "Default", "Extra"]
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
-def redact(value: str) -> str:
-    return "*" * len(value) if value else ""
-
-
 def open_file_location(filepath: str) -> None:
-    """Open the file manager revealing the given file."""
     filepath = os.path.abspath(filepath)
     system = platform.system()
     try:
@@ -104,7 +86,6 @@ def open_file_location(filepath: str) -> None:
 # ── Database Functions ──────────────────────────────────────────────
 
 def build_connection(driver: str, **params):
-    """Build a database connection from explicit parameters."""
     if driver == "sqlite":
         path = params["path"]
         if not os.path.isfile(path):
@@ -193,9 +174,6 @@ def list_tables(conn, driver: str):
 
 
 def get_table_description(conn, driver: str, table: str):
-    """Return rows in a uniform format:
-    [{"Field","Type","Null","Key","Default","Extra"}, ...]
-    """
     cursor = conn.cursor()
 
     if driver == "mysql":
@@ -304,7 +282,6 @@ def get_table_description(conn, driver: str, table: str):
 
 def export_to_excel(conn, driver: str, tables, output_path: str,
                     on_progress=None) -> None:
-    """Export all table descriptions to an Excel workbook."""
     wb = Workbook()
     ws = wb.active
     ws.title = "Table Descriptions"
@@ -387,30 +364,14 @@ def export_to_excel(conn, driver: str, tables, output_path: str,
 # ── Screens ─────────────────────────────────────────────────────────
 
 class MainScreen(Screen):
-    """Database type selection screen."""
-
-    DEFAULT_CSS = """
-    MainScreen > Vertical {
-        align: center top;
-        width: 50;
-        height: auto;
-        margin: 1 2;
-    }
-    RadioSet {
-        margin: 1 0;
-    }
-    RadioButton {
-        padding: 0 1;
-    }
-    """
-
     def compose(self) -> ComposeResult:
         yield Static("Dexcel — Database Schema Exporter", id="titlebar")
         with Vertical():
+            yield Label("Select a database type:")
             with RadioSet(id="db-type"):
                 for key, name in DB_TYPES_ORDERED:
                     yield RadioButton(f"{name}", id=key)
-            with Horizontal(classes="row"):
+            with Horizontal():
                 yield Button("Next", variant="primary", id="btn-next", disabled=True)
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
@@ -420,9 +381,6 @@ class MainScreen(Screen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-next":
             d = self.app.driver
-            if not d:
-                return
-            self.app.sub_title = dict(DB_TYPES_ORDERED).get(d, d)
             if d == "sqlite":
                 self.app.push_screen(SQLiteScreen())
             else:
@@ -430,30 +388,13 @@ class MainScreen(Screen):
 
 
 class SQLiteScreen(Screen):
-    """Connection details for SQLite."""
-
-    DEFAULT_CSS = """
-    SQLiteScreen > Vertical {
-        align: center top;
-        width: 50;
-        height: auto;
-        margin: 1 2;
-    }
-    Input {
-        margin: 0 0 1 0;
-        width: 100%;
-    }
-    .row Button {
-        margin: 0 1;
-    }
-    """
-
     def compose(self) -> ComposeResult:
         yield Static("Dexcel — Database Schema Exporter", id="titlebar")
         with Vertical():
+            yield Label("SQLite Database File")
             yield Input(placeholder="Path to .db or .sqlite file", id="db-path")
             yield Label("", id="sqlite-error")
-            with Horizontal(classes="row"):
+            with Horizontal():
                 yield Button("Back", id="back")
                 yield Button("Connect", variant="primary", id="connect")
 
@@ -473,34 +414,19 @@ class SQLiteScreen(Screen):
 
 
 class NetScreen(Screen):
-    """Connection details for network databases."""
-
-    DEFAULT_CSS = """
-    NetScreen > Vertical {
-        align: center top;
-        width: 50;
-        height: auto;
-        margin: 1 2;
-    }
-    Input {
-        margin: 0 0 1 0;
-        width: 100%;
-    }
-    .row Button {
-        margin: 0 1;
-    }
-    """
-
     def compose(self) -> ComposeResult:
         yield Static("Dexcel — Database Schema Exporter", id="titlebar")
         with Vertical():
+            yield Label("Server")
             yield Input(placeholder="Host", id="host")
             yield Input(placeholder="Port", id="port")
+            yield Label("Authentication")
             yield Input(placeholder="Username", id="username")
             yield Input(placeholder="Password", id="password", password=True)
+            yield Label("Database")
             yield Input(placeholder="Database name", id="database")
             yield Label("", id="net-error")
-            with Horizontal(classes="row"):
+            with Horizontal():
                 yield Button("Back", id="back")
                 yield Button("Connect", variant="primary", id="connect")
 
@@ -535,37 +461,13 @@ class NetScreen(Screen):
 
 
 class ExportScreen(Screen):
-    """Export progress and result display."""
-
-    DEFAULT_CSS = """
-    ExportScreen > Vertical {
-        align: center top;
-        width: 54;
-        height: auto;
-        margin: 1 2;
-    }
-    RichLog {
-        height: 60%;
-        min-height: 10;
-        margin: 0 0 1 0;
-        width: 100%;
-    }
-    #file-link {
-        padding: 1 2;
-        margin: 0 0 1 0;
-        width: 100%;
-    }
-    .row Button {
-        margin: 0 1;
-    }
-    """
-
     def compose(self) -> ComposeResult:
         yield Static("Dexcel — Database Schema Exporter", id="titlebar")
         with Vertical():
+            yield Label("Export Progress")
             yield RichLog(id="log", highlight=True, markup=True)
             yield Static("", id="file-link")
-            with Horizontal(classes="row"):
+            with Horizontal():
                 yield Button("Cancel", id="cancel")
                 yield Button("Open in Folder", id="open-folder", disabled=True)
                 yield Button("Exit", variant="primary", id="exit", disabled=True)
@@ -588,18 +490,18 @@ class ExportScreen(Screen):
             self.call_from_thread(self._append_log, msg)
 
         try:
-            _log("[bold]Connecting to database...[/bold]")
+            _log("Connecting to database...")
             conn, db_name = build_connection(self.app.driver, **self.app.db_params)
             self.app.conn = conn
             self.app.db_name = db_name
-            _log("[green]✔ Connected successfully.[/green]")
+            _log("Connected successfully.")
 
-            _log("[bold]Listing tables...[/bold]")
+            _log("Listing tables...")
             tables = list_tables(conn, self.app.driver)
-            _log(f"[cyan]Found {len(tables)} table(s).[/cyan]")
+            _log(f"Found {len(tables)} table(s).")
 
             if not tables:
-                _log("[yellow]No tables found in this database.[/yellow]")
+                _log("No tables found in this database.")
                 self.call_from_thread(self._finish, False)
                 return
 
@@ -608,20 +510,20 @@ class ExportScreen(Screen):
             self.app.output_file = output_path
 
             if os.path.exists(output_path):
-                _log("[yellow]⚠ File exists — will overwrite[/yellow]")
+                _log("File exists -- will overwrite")
 
-            _log(f"Output: [bold]{output_path}[/bold]")
+            _log(f"Output: {output_path}")
 
             def on_progress(msg: str) -> None:
                 self.call_from_thread(self._append_log, f"  {msg}")
 
             export_to_excel(conn, self.app.driver, tables, output_path, on_progress)
 
-            _log("[bold green]✔ Export complete![/bold green]")
+            _log("Export complete!")
             self.call_from_thread(self._finish, True, output_path)
 
         except Exception as e:
-            _log(f"[red]✘ Error: {e}[/red]")
+            _log(f"Error: {e}")
             logger.error("Export failed: %s", traceback.format_exc())
             self.call_from_thread(self._finish, False, error=str(e))
         finally:
@@ -642,14 +544,13 @@ class ExportScreen(Screen):
             self.query_one("#exit", Button).disabled = False
             self.query_one("#open-folder", Button).disabled = False
             self.query_one("#file-link", Static).update(
-                f"[bold]File saved:[/bold]\n"
-                f"[link=file://{file_path}]{file_path}[/link]\n"
-                f"[dim]Click the link above or press [b]Open in Folder[/b][/dim]"
+                f"File saved:\n"
+                f"{file_path}"
             )
         elif error:
             self.query_one("#exit", Button).disabled = False
             self.query_one("#file-link", Static).update(
-                f"[bold red]Error:[/bold red] {error}"
+                f"Error: {error}"
             )
         else:
             self.query_one("#exit", Button).disabled = False
@@ -658,107 +559,44 @@ class ExportScreen(Screen):
 # ── App ──────────────────────────────────────────────────────────────
 
 class DexcelApp(App):
-    TITLE = "Dexcel — Database Schema Exporter"
-    SUB_TITLE = ""
+    """Dexcel — Database Schema Exporter"""
 
     CSS = """
-    Screen {
-        background: #1a1b2e;
-    }
-
     #titlebar {
-        background: #3d5a80;
-        color: #ffffff;
+        background: $primary;
+        color: $text;
         text-style: bold;
         height: 1;
         content-align: center middle;
         width: 100%;
     }
 
-    Button {
-        min-width: 14;
-        background: #3d5a80;
-        color: #ffffff;
-        padding: 0 2;
-    }
-
-    Button:hover {
-        background: #5a7ab0;
-    }
-
-    Button:disabled {
-        background: #2a2a3e;
-        color: #666680;
-    }
-
-    Button.-primary {
-        background: #ee6c4d;
-        color: #ffffff;
-    }
-
-    Button.-primary:hover {
-        background: #ff8a6a;
+    Vertical {
+        align: center top;
+        width: 50;
+        height: auto;
+        margin: 1 2;
     }
 
     Input {
-        background: #2a2b3e;
-        color: #e0e0e0;
-        border: tall #3d5a80;
+        margin: 0 0 1 0;
     }
 
-    Input:focus {
-        border: tall #ee6c4d;
+    RichLog {
+        height: 60%;
+        min-height: 10;
+        margin: 0 0 1 0;
     }
 
-    Label {
-        color: #e0e0e0;
-    }
-
-    RadioSet {
-        background: #2a2b3e;
-        border: tall #3d5a80;
-        color: #e0e0e0;
-    }
-
-    RadioButton {
-        background: #2a2b3e;
-        color: #e0e0e0;
-        padding: 0 1;
-    }
-
-    RadioButton:hover {
-        background: #3d5a80;
-        color: #ffffff;
-    }
-
-    RadioButton.-selected {
-        background: #ee6c4d;
-        color: #ffffff;
-    }
-
-    .row {
+    Horizontal {
         align: center middle;
         height: auto;
         margin: 1 0 0 0;
     }
 
-    RichLog {
-        background: #2a2b3e;
-        color: #e0e0e0;
-        border: tall #3d5a80;
-    }
-
-    #file-link {
-        background: #1e3a2e;
-        color: #5ceda0;
-        border: tall #5ceda0;
-        padding: 1 2;
-        margin: 0 0 1 0;
-        width: 100%;
-    }
-
-    #sqlite-error, #net-error {
-        color: #ff6b6b;
+    Horizontal Button {
+        margin: 0 1;
+        min-width: 14;
     }
     """
 
