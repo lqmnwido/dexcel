@@ -31,15 +31,9 @@ Supported databases:
 curl -fsSL https://dexcel.kohich.site/install.sh | bash
 ```
 
-### Windows PowerShell
+### Windows
 
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "irm https://dexcel.kohich.site/install.ps1 | iex"
-```
-
-### Windows Command Prompt
-
-```cmd
 powershell -ExecutionPolicy Bypass -Command "irm https://dexcel.kohich.site/install.ps1 | iex"
 ```
 
