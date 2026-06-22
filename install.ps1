@@ -5,7 +5,6 @@
 #
 # Run after install:
 #   dexcel
-# install.ps1 — Dexcel installer for Windows
 
 $ErrorActionPreference = "Stop"
 
@@ -48,7 +47,7 @@ function Step {
     Write-Host ""
     Write-Host "[Dexcel Installer]" -ForegroundColor Cyan
     Write-Host "[$Bar] $Percent%"
-    Write-Host "Step $($script:CurrentStep)/$($script:TotalSteps): $Message" -ForegroundColor White
+    Write-Host "Step $($script:CurrentStep)/$($script:TotalSteps): $Message"
 
     Write-Progress `
         -Activity "Dexcel Installer" `
@@ -274,12 +273,16 @@ $Broken = New-Object System.Collections.Generic.List[string]
 foreach ($Label in $Drivers.Keys) {
     $Module = $Drivers[$Label]
 
-    & $VenvPython -c "import $Module" *>> $InstallLog
+    $Output = & $VenvPython -c "import $Module" 2>&1
+    $ExitCode = $LASTEXITCODE
 
-    if ($LASTEXITCODE -eq 0) {
+    if ($ExitCode -eq 0) {
         $Working.Add($Label)
+        Write-Log "Driver OK: $Label ($Module)"
     } else {
         $Broken.Add($Label)
+        Write-Log "Driver unavailable: $Label ($Module)"
+        Write-Log ($Output | Out-String)
     }
 }
 
