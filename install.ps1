@@ -7,6 +7,7 @@
 #   dexcel
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 
 $ReleaseBaseUrl = $env:DEXCEL_RELEASE_URL
 if (-not $ReleaseBaseUrl) {
@@ -25,14 +26,15 @@ $InstallLog = Join-Path $LogDir "install_$Timestamp.log"
 
 New-Item -ItemType Directory -Force -Path $InstallDir, $AppDir, $LogDir, $BinDir | Out-Null
 
-$script:CurrentStep = 0
-$script:TotalSteps = 10
-$script:ProgressWidth = 34
+$script:ProgressWidth = 36
 
 function Write-Log {
     param([string]$Message)
 
-    Add-Content -Path $InstallLog -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message"
+    Add-Content `
+        -Path $InstallLog `
+        -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message" `
+        -Encoding UTF8
 }
 
 function Show-Header {
@@ -49,28 +51,26 @@ function Show-Header {
     Write-Host ""
 }
 
-function Show-Step {
-    param([string]$Message)
+function Show-Stage {
+    param(
+        [int]$Percent,
+        [string]$Title
+    )
 
-    $script:CurrentStep++
+    if ($Percent -lt 0) { $Percent = 0 }
+    if ($Percent -gt 100) { $Percent = 100 }
 
-    if ($script:CurrentStep -gt $script:TotalSteps) {
-        $script:CurrentStep = $script:TotalSteps
-    }
-
-    $Percent = [math]::Round(($script:CurrentStep / $script:TotalSteps) * 100)
     $Done = [math]::Floor(($Percent / 100) * $script:ProgressWidth)
     $Left = $script:ProgressWidth - $Done
-
     $Bar = ("#" * $Done) + ("-" * $Left)
 
     Write-Host ""
     Write-Host "----------------------------------------------------" -ForegroundColor DarkGray
     Write-Host "[$Bar] $Percent%" -ForegroundColor Cyan
-    Write-Host "Step $($script:CurrentStep)/$($script:TotalSteps): $Message" -ForegroundColor White
+    Write-Host "$Title" -ForegroundColor White
     Write-Host "----------------------------------------------------" -ForegroundColor DarkGray
 
-    Write-Log $Message
+    Write-Log $Title
 }
 
 function Show-Task {
@@ -92,6 +92,13 @@ function Show-Warn {
 
     Write-Host "  [WARN] $Message" -ForegroundColor Yellow
     Write-Log "WARN: $Message"
+}
+
+function Show-FailLine {
+    param([string]$Message)
+
+    Write-Host "  [FAIL] $Message" -ForegroundColor Red
+    Write-Log "FAIL: $Message"
 }
 
 function Fail {
@@ -127,150 +134,151 @@ function Quote-Arg {
 function Join-Args {
     param([string[]]$Arguments)
 
+    if (-not $Arguments) {
+        return ""
+    }
+
     return ($Arguments | ForEach-Object { Quote-Arg $_ }) -join " "
 }
 
-function Get-FileText {
-    param([string]$Path)
-
-    if (Test-Path $Path) {
-        return Get-Content -Path $Path -Raw -ErrorAction SilentlyContinue
-    }
-
-    return ""
-}
-
-function Get-FileTail {
+function Show-OutputTail {
     param(
-        [string]$Path,
-        [int]$Lines = 40
+        [string]$Text,
+        [int]$Lines = 20
     )
 
-    if (Test-Path $Path) {
-        return Get-Content -Path $Path -Tail $Lines -ErrorAction SilentlyContinue
+    if (-not $Text) {
+        return
     }
 
-    return @()
-}
+    $Parts = $Text -split "`r?`n"
+    $Tail = $Parts | Where-Object { $_.Trim() -ne "" } | Select-Object -Last $Lines
 
-function Invoke-Capture {
-    param(
-        [string]$FilePath,
-        [string[]]$Arguments
-    )
-
-    $StdOut = Join-Path $env:TEMP ("dexcel_stdout_" + [guid]::NewGuid().ToString() + ".log")
-    $StdErr = Join-Path $env:TEMP ("dexcel_stderr_" + [guid]::NewGuid().ToString() + ".log")
-
-    try {
-        $ArgumentLine = Join-Args $Arguments
-
-        $Process = Start-Process `
-            -FilePath $FilePath `
-            -ArgumentList $ArgumentLine `
-            -RedirectStandardOutput $StdOut `
-            -RedirectStandardError $StdErr `
-            -NoNewWindow `
-            -PassThru
-
-        $Process.WaitForExit()
-
-        $Output = (Get-FileText $StdOut) + (Get-FileText $StdErr)
-
-        return [pscustomobject]@{
-            ExitCode = $Process.ExitCode
-            Output   = $Output
-        }
-    } finally {
-        Remove-Item $StdOut, $StdErr -Force -ErrorAction SilentlyContinue
+    foreach ($Line in $Tail) {
+        Write-Host "    $Line" -ForegroundColor DarkGray
     }
 }
 
-function Invoke-LoggedCommand {
+function Invoke-ProcessQuiet {
     param(
         [string]$Title,
         [string]$FilePath,
-        [string[]]$Arguments
+        [string[]]$Arguments,
+        [switch]$AllowFailure,
+        [switch]$Silent
     )
 
-    Write-Log "RUN: $Title"
-    Write-Log "CMD: $FilePath $(Join-Args $Arguments)"
+    if (-not $Arguments) {
+        $Arguments = @()
+    }
 
-    $StdOut = Join-Path $env:TEMP ("dexcel_stdout_" + [guid]::NewGuid().ToString() + ".log")
-    $StdErr = Join-Path $env:TEMP ("dexcel_stderr_" + [guid]::NewGuid().ToString() + ".log")
+    Write-Log "RUN: $Title"
+    Write-Log ("CMD: " + $FilePath + " " + (Join-Args $Arguments))
+
+    $StartTime = Get-Date
+
+    $Psi = New-Object System.Diagnostics.ProcessStartInfo
+    $Psi.FileName = $FilePath
+    $Psi.Arguments = Join-Args $Arguments
+    $Psi.UseShellExecute = $false
+    $Psi.RedirectStandardOutput = $true
+    $Psi.RedirectStandardError = $true
+    $Psi.CreateNoWindow = $true
+
+    $Process = New-Object System.Diagnostics.Process
+    $Process.StartInfo = $Psi
 
     try {
-        $ArgumentLine = Join-Args $Arguments
+        [void]$Process.Start()
 
-        $Process = Start-Process `
-            -FilePath $FilePath `
-            -ArgumentList $ArgumentLine `
-            -RedirectStandardOutput $StdOut `
-            -RedirectStandardError $StdErr `
-            -NoNewWindow `
-            -PassThru
+        $StdOutTask = $Process.StandardOutput.ReadToEndAsync()
+        $StdErrTask = $Process.StandardError.ReadToEndAsync()
 
         $Spinner = @("|", "/", "-", "\")
         $SpinIndex = 0
-        $StartTime = Get-Date
 
         while (-not $Process.HasExited) {
-            $Spin = $Spinner[$SpinIndex % $Spinner.Count]
-            $SpinIndex++
+            if (-not $Silent) {
+                $Spin = $Spinner[$SpinIndex % $Spinner.Count]
+                $SpinIndex++
 
-            $Elapsed = [int]((Get-Date) - $StartTime).TotalSeconds
-            $Text = "  [$Spin] $Title... ${Elapsed}s"
+                $Elapsed = [int]((Get-Date) - $StartTime).TotalSeconds
+                $Line = "  [$Spin] $Title... ${Elapsed}s"
 
-            Write-Host -NoNewline "`r$Text"
+                Write-Host -NoNewline "`r$Line"
+            }
+
             Start-Sleep -Milliseconds 180
         }
 
         $Process.WaitForExit()
+
+        $StdOut = $StdOutTask.Result
+        $StdErr = $StdErrTask.Result
+        $Output = ($StdOut + "`n" + $StdErr).Trim()
+
+        if ($Output) {
+            Add-Content -Path $InstallLog -Value $Output -Encoding UTF8
+        }
+
         $ElapsedTotal = [int]((Get-Date) - $StartTime).TotalSeconds
+        $ExitCode = $Process.ExitCode
 
-        $OutText = Get-FileText $StdOut
-        $ErrText = Get-FileText $StdErr
-
-        if ($OutText) {
-            Add-Content -Path $InstallLog -Value $OutText
+        if (-not $Silent) {
+            $Clear = " " * 100
+            Write-Host -NoNewline "`r$Clear`r"
         }
 
-        if ($ErrText) {
-            Add-Content -Path $InstallLog -Value $ErrText
+        if ($ExitCode -eq 0) {
+            if (-not $Silent) {
+                Show-Ok "$Title completed in ${ElapsedTotal}s"
+            }
+
+            return [pscustomobject]@{
+                ExitCode = $ExitCode
+                Output   = $Output
+            }
         }
 
-        $Clear = " " * 90
-        Write-Host -NoNewline "`r$Clear`r"
+        if ($AllowFailure) {
+            if (-not $Silent) {
+                Show-Warn "$Title returned exit code $ExitCode"
+            }
 
-        if ($Process.ExitCode -eq 0) {
-            Write-Host "  [OK] $Title completed in ${ElapsedTotal}s" -ForegroundColor Green
-            Write-Log "OK: $Title completed in ${ElapsedTotal}s"
-            return
+            return [pscustomobject]@{
+                ExitCode = $ExitCode
+                Output   = $Output
+            }
         }
 
-        Write-Host "  [FAIL] $Title failed" -ForegroundColor Red
+        if (-not $Silent) {
+            Show-FailLine "$Title failed with exit code $ExitCode"
 
-        Write-Host ""
-        Write-Host "Last output:" -ForegroundColor Yellow
-
-        $TailOut = Get-FileTail $StdOut 20
-        $TailErr = Get-FileTail $StdErr 20
-
-        foreach ($Line in $TailOut) {
-            Write-Host "  $Line"
+            if ($Output) {
+                Write-Host ""
+                Write-Host "  Last output:" -ForegroundColor Yellow
+                Show-OutputTail $Output 25
+            }
         }
 
-        foreach ($Line in $TailErr) {
-            Write-Host "  $Line"
-        }
-
-        throw "$Title failed with exit code $($Process.ExitCode)"
+        throw "$Title failed with exit code $ExitCode"
     } catch {
-        Write-Log "ERROR: $_"
+        if ($AllowFailure) {
+            return [pscustomobject]@{
+                ExitCode = 1
+                Output   = $_.ToString()
+            }
+        }
+
         throw $_
-    } finally {
-        Remove-Item $StdOut, $StdErr -Force -ErrorAction SilentlyContinue
     }
+}
+
+function Refresh-EnvironmentPath {
+    $MachinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+
+    $env:Path = "$MachinePath;$UserPath"
 }
 
 function Test-PythonCommand {
@@ -280,21 +288,21 @@ function Test-PythonCommand {
 
     try {
         if ($Command -eq "py -3.12") {
-            $Result = Invoke-Capture -FilePath "py" -Arguments @("-3.12", "-c", $Code)
+            $Result = Invoke-ProcessQuiet "Test Python 3.12" "py" @("-3.12", "-c", $Code) -AllowFailure -Silent
             return $Result.ExitCode -eq 0
         }
 
         if ($Command -eq "py -3.11") {
-            $Result = Invoke-Capture -FilePath "py" -Arguments @("-3.11", "-c", $Code)
+            $Result = Invoke-ProcessQuiet "Test Python 3.11" "py" @("-3.11", "-c", $Code) -AllowFailure -Silent
             return $Result.ExitCode -eq 0
         }
 
         if ($Command -eq "py -3.10") {
-            $Result = Invoke-Capture -FilePath "py" -Arguments @("-3.10", "-c", $Code)
+            $Result = Invoke-ProcessQuiet "Test Python 3.10" "py" @("-3.10", "-c", $Code) -AllowFailure -Silent
             return $Result.ExitCode -eq 0
         }
 
-        $Result = Invoke-Capture -FilePath $Command -Arguments @("-c", $Code)
+        $Result = Invoke-ProcessQuiet "Test Python path" $Command @("-c", $Code) -AllowFailure -Silent
         return $Result.ExitCode -eq 0
     } catch {
         return $false
@@ -302,23 +310,32 @@ function Test-PythonCommand {
 }
 
 function Find-Python {
+    Refresh-EnvironmentPath
+
     if (Get-Command py -ErrorAction SilentlyContinue) {
-        if (Test-PythonCommand "py -3.12") {
-            return "py -3.12"
-        }
-
-        if (Test-PythonCommand "py -3.11") {
-            return "py -3.11"
-        }
-
-        if (Test-PythonCommand "py -3.10") {
-            return "py -3.10"
-        }
+        if (Test-PythonCommand "py -3.12") { return "py -3.12" }
+        if (Test-PythonCommand "py -3.11") { return "py -3.11" }
+        if (Test-PythonCommand "py -3.10") { return "py -3.10" }
     }
 
     if (Get-Command python -ErrorAction SilentlyContinue) {
-        if (Test-PythonCommand "python") {
-            return "python"
+        if (Test-PythonCommand "python") { return "python" }
+    }
+
+    $CommonPaths = @(
+        "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python310\python.exe",
+        "$env:ProgramFiles\Python312\python.exe",
+        "$env:ProgramFiles\Python311\python.exe",
+        "$env:ProgramFiles\Python310\python.exe"
+    )
+
+    foreach ($Path in $CommonPaths) {
+        if (Test-Path $Path) {
+            if (Test-PythonCommand $Path) {
+                return $Path
+            }
         }
     }
 
@@ -330,24 +347,101 @@ function Get-PythonVersion {
 
     try {
         if ($PythonCmd -eq "py -3.12") {
-            $Result = Invoke-Capture -FilePath "py" -Arguments @("-3.12", "--version")
+            $Result = Invoke-ProcessQuiet "Get Python version" "py" @("-3.12", "--version") -AllowFailure -Silent
             return $Result.Output.Trim()
         }
 
         if ($PythonCmd -eq "py -3.11") {
-            $Result = Invoke-Capture -FilePath "py" -Arguments @("-3.11", "--version")
+            $Result = Invoke-ProcessQuiet "Get Python version" "py" @("-3.11", "--version") -AllowFailure -Silent
             return $Result.Output.Trim()
         }
 
         if ($PythonCmd -eq "py -3.10") {
-            $Result = Invoke-Capture -FilePath "py" -Arguments @("-3.10", "--version")
+            $Result = Invoke-ProcessQuiet "Get Python version" "py" @("-3.10", "--version") -AllowFailure -Silent
             return $Result.Output.Trim()
         }
 
-        $Result = Invoke-Capture -FilePath $PythonCmd -Arguments @("--version")
+        $Result = Invoke-ProcessQuiet "Get Python version" $PythonCmd @("--version") -AllowFailure -Silent
         return $Result.Output.Trim()
     } catch {
         return $PythonCmd
+    }
+}
+
+function Install-Python312 {
+    Show-Task "Compatible Python was not found"
+    Show-Task "Installing Python 3.12"
+
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Show-Task "Trying winget install first"
+
+        $WingetResult = Invoke-ProcessQuiet `
+            "Install Python 3.12 using winget" `
+            "winget" `
+            @(
+                "install",
+                "-e",
+                "--id",
+                "Python.Python.3.12",
+                "--silent",
+                "--disable-interactivity",
+                "--accept-package-agreements",
+                "--accept-source-agreements"
+            ) `
+            -AllowFailure
+
+        Refresh-EnvironmentPath
+
+        $PythonAfterWinget = Find-Python
+        if ($PythonAfterWinget) {
+            Show-Ok "Python was installed successfully by winget"
+            return $PythonAfterWinget
+        }
+
+        Show-Warn "winget finished but Python is not available in this terminal yet"
+        Show-Warn "Falling back to direct Python installer"
+    } else {
+        Show-Warn "winget was not found"
+    }
+
+    $PythonInstaller = Join-Path $env:TEMP "python-3.12-installer.exe"
+    $PythonInstallerUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
+
+    try {
+        Show-Task "Downloading Python 3.12 installer"
+
+        Invoke-WebRequest `
+            -Uri $PythonInstallerUrl `
+            -OutFile $PythonInstaller `
+            -UseBasicParsing
+
+        $InstallResult = Invoke-ProcessQuiet `
+            "Install Python 3.12 directly" `
+            $PythonInstaller `
+            @(
+                "/quiet",
+                "InstallAllUsers=0",
+                "PrependPath=1",
+                "Include_launcher=1",
+                "Include_pip=1",
+                "Include_test=0"
+            ) `
+            -AllowFailure
+
+        Remove-Item $PythonInstaller -Force -ErrorAction SilentlyContinue
+
+        Refresh-EnvironmentPath
+
+        $PythonAfterDirect = Find-Python
+        if ($PythonAfterDirect) {
+            Show-Ok "Python was installed successfully"
+            return $PythonAfterDirect
+        }
+
+        throw "Python installer completed, but Python could not be found in PATH or common install paths."
+    } catch {
+        Remove-Item $PythonInstaller -Force -ErrorAction SilentlyContinue
+        throw $_
     }
 }
 
@@ -355,21 +449,21 @@ function Create-Venv {
     param([string]$PythonCmd)
 
     if ($PythonCmd -eq "py -3.12") {
-        Invoke-LoggedCommand "Create Python virtual environment" "py" @("-3.12", "-m", "venv", $VenvDir)
+        Invoke-ProcessQuiet "Create Python virtual environment" "py" @("-3.12", "-m", "venv", $VenvDir)
         return
     }
 
     if ($PythonCmd -eq "py -3.11") {
-        Invoke-LoggedCommand "Create Python virtual environment" "py" @("-3.11", "-m", "venv", $VenvDir)
+        Invoke-ProcessQuiet "Create Python virtual environment" "py" @("-3.11", "-m", "venv", $VenvDir)
         return
     }
 
     if ($PythonCmd -eq "py -3.10") {
-        Invoke-LoggedCommand "Create Python virtual environment" "py" @("-3.10", "-m", "venv", $VenvDir)
+        Invoke-ProcessQuiet "Create Python virtual environment" "py" @("-3.10", "-m", "venv", $VenvDir)
         return
     }
 
-    Invoke-LoggedCommand "Create Python virtual environment" $PythonCmd @("-m", "venv", $VenvDir)
+    Invoke-ProcessQuiet "Create Python virtual environment" $PythonCmd @("-m", "venv", $VenvDir)
 }
 
 function Test-VenvCompatible {
@@ -382,7 +476,7 @@ function Test-VenvCompatible {
     $Code = "import sys; exit(0 if sys.version_info >= (3,10) and sys.version_info < (3,13) else 1)"
 
     try {
-        $Result = Invoke-Capture -FilePath $PythonExe -Arguments @("-c", $Code)
+        $Result = Invoke-ProcessQuiet "Test virtual environment Python" $PythonExe @("-c", $Code) -AllowFailure -Silent
         return $Result.ExitCode -eq 0
     } catch {
         return $false
@@ -398,7 +492,7 @@ function Test-PythonImport {
     $Code = "import importlib; importlib.import_module('$Module')"
 
     try {
-        $Result = Invoke-Capture -FilePath $PythonExe -Arguments @("-c", $Code)
+        $Result = Invoke-ProcessQuiet "Test import $Module" $PythonExe @("-c", $Code) -AllowFailure -Silent
 
         return [pscustomobject]@{
             Success = ($Result.ExitCode -eq 0)
@@ -414,57 +508,22 @@ function Test-PythonImport {
 
 Show-Header
 
-Show-Step "Checking compatible Python"
+Show-Stage 10 "Checking compatible Python"
 
 $PythonCmd = Find-Python
 
 if (-not $PythonCmd) {
-    Show-Task "Compatible Python was not found. Installing Python 3.12..."
-
     try {
-        if (Get-Command winget -ErrorAction SilentlyContinue) {
-            Invoke-LoggedCommand `
-                "Install Python 3.12 using winget" `
-                "winget" `
-                @(
-                    "install",
-                    "-e",
-                    "--id",
-                    "Python.Python.3.12",
-                    "--accept-package-agreements",
-                    "--accept-source-agreements"
-                )
-        } else {
-            $PythonInstaller = Join-Path $env:TEMP "python-3.12-installer.exe"
-
-            Show-Task "Downloading Python 3.12 installer..."
-
-            Invoke-WebRequest `
-                -Uri "https://www.python.org/ftp/python/3.12.4/python-3.12.4-amd64.exe" `
-                -OutFile $PythonInstaller
-
-            Invoke-LoggedCommand `
-                "Install Python 3.12" `
-                $PythonInstaller `
-                @("/quiet", "InstallAllUsers=0", "PrependPath=1", "Include_test=0")
-
-            Remove-Item $PythonInstaller -Force -ErrorAction SilentlyContinue
-        }
+        $PythonCmd = Install-Python312
     } catch {
         Fail "Failed to install Python 3.12. $_"
-    }
-
-    $PythonCmd = Find-Python
-
-    if (-not $PythonCmd) {
-        Fail "Python 3.12 was installed but could not be found. Open a new terminal and re-run the installer."
     }
 }
 
 $PythonVersion = Get-PythonVersion $PythonCmd
 Show-Ok "Using $PythonVersion via $PythonCmd"
 
-Show-Step "Checking old virtual environment"
+Show-Stage 20 "Checking old virtual environment"
 
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 
@@ -472,7 +531,8 @@ if (Test-Path $VenvPython) {
     if (Test-VenvCompatible $VenvPython) {
         Show-Ok "Existing virtual environment is compatible"
     } else {
-        Show-Warn "Old virtual environment is incompatible. Removing it..."
+        Show-Warn "Old virtual environment is incompatible"
+        Show-Task "Removing old virtual environment"
         Remove-Item -Recurse -Force $VenvDir
         Show-Ok "Old virtual environment removed"
     }
@@ -480,7 +540,7 @@ if (Test-Path $VenvPython) {
     Show-Task "No existing virtual environment found"
 }
 
-Show-Step "Downloading Dexcel files"
+Show-Stage 30 "Downloading Dexcel files"
 
 try {
     $MainFile = Join-Path $AppDir "db_to_excel.py"
@@ -489,19 +549,21 @@ try {
     Show-Task "Downloading db_to_excel.py"
     Invoke-WebRequest `
         -Uri "$ReleaseBaseUrl/db_to_excel.py" `
-        -OutFile $MainFile
+        -OutFile $MainFile `
+        -UseBasicParsing
 
     Show-Task "Downloading requirements.txt"
     Invoke-WebRequest `
         -Uri "$ReleaseBaseUrl/requirements.txt" `
-        -OutFile $RequirementsFile
+        -OutFile $RequirementsFile `
+        -UseBasicParsing
 
     Show-Ok "Application files downloaded"
 } catch {
     Fail "Failed to download Dexcel files from $ReleaseBaseUrl. $_"
 }
 
-Show-Step "Preparing Python environment"
+Show-Stage 40 "Preparing Python environment"
 
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 
@@ -521,10 +583,10 @@ if (-not (Test-Path $VenvPython)) {
     Show-Ok "Using existing virtual environment"
 }
 
-Show-Step "Upgrading installer tools"
+Show-Stage 55 "Upgrading installer tools"
 
 try {
-    Invoke-LoggedCommand `
+    Invoke-ProcessQuiet `
         "Upgrade pip, setuptools, and wheel" `
         $VenvPython `
         @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
@@ -532,10 +594,10 @@ try {
     Fail "Failed to upgrade pip, setuptools, and wheel. $_"
 }
 
-Show-Step "Installing Dexcel dependencies"
+Show-Stage 70 "Installing Dexcel dependencies"
 
 try {
-    Invoke-LoggedCommand `
+    Invoke-ProcessQuiet `
         "Install Python dependencies" `
         $VenvPython `
         @("-m", "pip", "install", "-r", $RequirementsFile)
@@ -547,10 +609,10 @@ try {
     Fail "Failed to install Dexcel dependencies. $_"
 }
 
-Show-Step "Verifying core packages"
+Show-Stage 80 "Verifying core packages"
 
 try {
-    Invoke-LoggedCommand `
+    Invoke-ProcessQuiet `
         "Verify pandas and openpyxl" `
         $VenvPython `
         @("-c", "import pandas, openpyxl")
@@ -558,9 +620,9 @@ try {
     Fail "Core packages failed verification. $_"
 }
 
-Show-Step "Checking database drivers"
+Show-Stage 88 "Checking database drivers"
 
-$Drivers = @{
+$Drivers = [ordered]@{
     "MySQL/MariaDB" = "pymysql"
     "PostgreSQL"   = "psycopg"
     "SQL Server"   = "pyodbc"
@@ -587,7 +649,7 @@ foreach ($Label in $Drivers.Keys) {
     }
 }
 
-Show-Step "Creating dexcel command"
+Show-Stage 95 "Creating dexcel command"
 
 $DbToExcelPath = Join-Path $AppDir "db_to_excel.py"
 
@@ -602,16 +664,16 @@ try {
     Fail "Failed to create dexcel launcher. $_"
 }
 
-Show-Step "Finalizing installation"
+Show-Stage 100 "Finalizing installation"
 
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
 
 if ($UserPath -notlike "*$BinDir*") {
-    [Environment]::SetEnvironmentVariable(
-        "Path",
-        "$UserPath;$BinDir",
-        "User"
-    )
+    if ([string]::IsNullOrWhiteSpace($UserPath)) {
+        [Environment]::SetEnvironmentVariable("Path", $BinDir, "User")
+    } else {
+        [Environment]::SetEnvironmentVariable("Path", "$UserPath;$BinDir", "User")
+    }
 
     $NeedNewTerminal = $true
     Show-Ok "Added Dexcel to user PATH"
