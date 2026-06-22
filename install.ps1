@@ -5,7 +5,7 @@
 #
 # Run after install:
 #   dexcel
-
+# install.ps1 — Dexcel installer for Windows
 
 $ErrorActionPreference = "Stop"
 
@@ -31,14 +31,28 @@ function Write-Log {
     Add-Content -Path $InstallLog -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message"
 }
 
+$script:CurrentStep = 0
+$script:TotalSteps = 8
+
 function Step {
-    param(
-        [int]$Percent,
-        [string]$Message
+    param([string]$Message)
+
+    $script:CurrentStep++
+
+    $Percent = [math]::Round(
+        ($script:CurrentStep / $script:TotalSteps) * 100
     )
 
-    Write-Progress -Activity "Installing Dexcel" -Status $Message -PercentComplete $Percent
-    Write-Host "[$Percent%] $Message"
+    Write-Progress `
+        -Activity "Dexcel Installer" `
+        -Status $Message `
+        -PercentComplete $Percent
+
+    Write-Host ""
+    Write-Host "=================================================="
+    Write-Host "[Step $($script:CurrentStep)/$($script:TotalSteps)] $Message"
+    Write-Host "=================================================="
+
     Write-Log $Message
 }
 
@@ -46,12 +60,10 @@ function Fail {
     param([string]$Message)
 
     Write-Progress -Activity "Installing Dexcel" -Completed
-
     Write-Host ""
     Write-Host "Error: $Message" -ForegroundColor Red
     Write-Host "Log: $InstallLog"
     Write-Log "FATAL: $Message"
-
     exit 1
 }
 
@@ -79,12 +91,24 @@ function Test-PythonCommand {
     param([string]$Command)
 
     try {
-        if ($Command -eq "py -3") {
-            & py -3 -c "import sys; exit(0 if sys.version_info >= (3,8) else 1)" 2>$null
+        $Code = "import sys; exit(0 if sys.version_info >= (3,10) and sys.version_info < (3,13) else 1)"
+
+        if ($Command -eq "py -3.12") {
+            & py -3.12 -c $Code 2>$null
             return $LASTEXITCODE -eq 0
         }
 
-        & $Command -c "import sys; exit(0 if sys.version_info >= (3,8) else 1)" 2>$null
+        if ($Command -eq "py -3.11") {
+            & py -3.11 -c $Code 2>$null
+            return $LASTEXITCODE -eq 0
+        }
+
+        if ($Command -eq "py -3.10") {
+            & py -3.10 -c $Code 2>$null
+            return $LASTEXITCODE -eq 0
+        }
+
+        & $Command -c $Code 2>$null
         return $LASTEXITCODE -eq 0
     } catch {
         return $false
@@ -93,8 +117,16 @@ function Test-PythonCommand {
 
 function Find-Python {
     if (Get-Command py -ErrorAction SilentlyContinue) {
-        if (Test-PythonCommand "py -3") {
-            return "py -3"
+        if (Test-PythonCommand "py -3.12") {
+            return "py -3.12"
+        }
+
+        if (Test-PythonCommand "py -3.11") {
+            return "py -3.11"
+        }
+
+        if (Test-PythonCommand "py -3.10") {
+            return "py -3.10"
         }
     }
 
@@ -107,15 +139,37 @@ function Find-Python {
     return $null
 }
 
+function Create-Venv {
+    param([string]$PythonCmd)
+
+    if ($PythonCmd -eq "py -3.12") {
+        Run-Command "Create venv using py -3.12" {
+            py -3.12 -m venv $VenvDir
+        }
+    } elseif ($PythonCmd -eq "py -3.11") {
+        Run-Command "Create venv using py -3.11" {
+            py -3.11 -m venv $VenvDir
+        }
+    } elseif ($PythonCmd -eq "py -3.10") {
+        Run-Command "Create venv using py -3.10" {
+            py -3.10 -m venv $VenvDir
+        }
+    } else {
+        Run-Command "Create venv using python" {
+            python -m venv $VenvDir
+        }
+    }
+}
+
 Step 5 "Starting Dexcel installer..."
 
 $PythonCmd = Find-Python
 
 if (-not $PythonCmd) {
-    Step 10 "Python 3.8+ not found. Installing Python..."
+    Step 10 "Compatible Python not found. Installing Python 3.12..."
 
     if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Run-Command "Install Python using winget" {
+        Run-Command "Install Python 3.12 using winget" {
             winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements
         }
     } else {
@@ -136,11 +190,24 @@ if (-not $PythonCmd) {
     $PythonCmd = Find-Python
 
     if (-not $PythonCmd) {
-        Fail "Python was installed but could not be found. Open a new terminal and re-run installer."
+        Fail "Python 3.12 was installed but could not be found. Open a new terminal and re-run installer."
     }
 }
 
 Step 20 "Using Python: $PythonCmd"
+
+Step 25 "Resetting old virtual environment if incompatible..."
+
+$VenvPython = Join-Path $VenvDir "Scripts\python.exe"
+
+if (Test-Path $VenvPython) {
+    & $VenvPython -c "import sys; exit(0 if sys.version_info >= (3,10) and sys.version_info < (3,13) else 1)" 2>$null
+
+    if ($LASTEXITCODE -ne 0) {
+        Step 28 "Removing incompatible old virtual environment..."
+        Remove-Item -Recurse -Force $VenvDir
+    }
+}
 
 Step 30 "Downloading Dexcel application files..."
 
@@ -160,22 +227,13 @@ $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 
 if (-not (Test-Path $VenvPython)) {
     Step 40 "Creating isolated Python environment..."
-
-    if ($PythonCmd -eq "py -3") {
-        Run-Command "Create venv using py -3" {
-            py -3 -m venv $VenvDir
-        }
-    } else {
-        Run-Command "Create venv using python" {
-            python -m venv $VenvDir
-        }
-    }
+    Create-Venv $PythonCmd
 
     if (-not (Test-Path $VenvPython)) {
         Fail "Failed to create virtual environment."
     }
 } else {
-    Step 40 "Existing Dexcel environment found. Updating it..."
+    Step 40 "Existing compatible Dexcel environment found. Updating it..."
 }
 
 Step 50 "Upgrading pip, setuptools, and wheel..."
@@ -188,7 +246,7 @@ try {
     Fail "Failed to upgrade pip. See log for details."
 }
 
-Step 60 "Installing Dexcel core dependencies..."
+Step 60 "Installing Dexcel dependencies..."
 
 try {
     Run-Command "Install requirements.txt" {
@@ -216,7 +274,7 @@ Step 85 "Checking database drivers..."
 
 $Drivers = @{
     "MySQL/MariaDB" = "pymysql"
-    "PostgreSQL" = "psycopg2"
+    "PostgreSQL" = "psycopg"
     "SQL Server" = "pyodbc"
     "Oracle" = "oracledb"
 }
