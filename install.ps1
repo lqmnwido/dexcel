@@ -31,40 +31,41 @@ function Write-Log {
     Add-Content -Path $InstallLog -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message"
 }
 
-$script:SpinnerIndex = 0
-$script:ProgressWidth = 28
+$script:CurrentStep = 0
+$script:TotalSteps = 9
+$script:ProgressWidth = 32
 
 function Step {
-    param(
-        [int]$Percent,
-        [string]$Message
-    )
+    param([string]$Message)
 
-    $Spinner = @("⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏")
-    $Spin = $Spinner[$script:SpinnerIndex % $Spinner.Count]
-    $script:SpinnerIndex++
+    $script:CurrentStep++
+    $Percent = [math]::Round(($script:CurrentStep / $script:TotalSteps) * 100)
 
-    $Completed = [math]::Floor(($Percent / 100) * $script:ProgressWidth)
-    $Remaining = $script:ProgressWidth - $Completed
+    $Done = [math]::Floor(($Percent / 100) * $script:ProgressWidth)
+    $Left = $script:ProgressWidth - $Done
+    $Bar = ("#" * $Done) + ("-" * $Left)
 
-    $Bar = ("█" * $Completed) + ("░" * $Remaining)
+    Write-Host ""
+    Write-Host "[Dexcel Installer]" -ForegroundColor Cyan
+    Write-Host "[$Bar] $Percent%"
+    Write-Host "Step $($script:CurrentStep)/$($script:TotalSteps): $Message" -ForegroundColor White
 
     Write-Progress `
         -Activity "Dexcel Installer" `
-        -Status "$Percent% - $Message" `
+        -Status "Step $($script:CurrentStep)/$($script:TotalSteps): $Message" `
         -PercentComplete $Percent
 
-    Write-Host "$Spin [$Bar] $Percent%  $Message"
     Write-Log $Message
 }
 
 function Fail {
     param([string]$Message)
 
-    Write-Progress -Activity "Installing Dexcel" -Completed
+    Write-Progress -Activity "Dexcel Installer" -Completed
     Write-Host ""
-    Write-Host "Error: $Message" -ForegroundColor Red
-    Write-Host "Log: $InstallLog"
+    Write-Host "Installation failed." -ForegroundColor Red
+    Write-Host $Message -ForegroundColor Red
+    Write-Host "Log: $InstallLog" -ForegroundColor Yellow
     Write-Log "FATAL: $Message"
     exit 1
 }
@@ -78,7 +79,7 @@ function Run-Command {
     Write-Log "RUN: $Title"
 
     try {
-        & $Command *>> $InstallLog
+        & $Command 2>&1 | Tee-Object -FilePath $InstallLog -Append
 
         if ($LASTEXITCODE -ne 0) {
             throw "$Title failed with exit code $LASTEXITCODE"
@@ -119,23 +120,13 @@ function Test-PythonCommand {
 
 function Find-Python {
     if (Get-Command py -ErrorAction SilentlyContinue) {
-        if (Test-PythonCommand "py -3.12") {
-            return "py -3.12"
-        }
-
-        if (Test-PythonCommand "py -3.11") {
-            return "py -3.11"
-        }
-
-        if (Test-PythonCommand "py -3.10") {
-            return "py -3.10"
-        }
+        if (Test-PythonCommand "py -3.12") { return "py -3.12" }
+        if (Test-PythonCommand "py -3.11") { return "py -3.11" }
+        if (Test-PythonCommand "py -3.10") { return "py -3.10" }
     }
 
     if (Get-Command python -ErrorAction SilentlyContinue) {
-        if (Test-PythonCommand "python") {
-            return "python"
-        }
+        if (Test-PythonCommand "python") { return "python" }
     }
 
     return $null
@@ -145,30 +136,29 @@ function Create-Venv {
     param([string]$PythonCmd)
 
     if ($PythonCmd -eq "py -3.12") {
-        Run-Command "Create venv using py -3.12" {
-            py -3.12 -m venv $VenvDir
-        }
+        Run-Command "Create venv using py -3.12" { py -3.12 -m venv $VenvDir }
     } elseif ($PythonCmd -eq "py -3.11") {
-        Run-Command "Create venv using py -3.11" {
-            py -3.11 -m venv $VenvDir
-        }
+        Run-Command "Create venv using py -3.11" { py -3.11 -m venv $VenvDir }
     } elseif ($PythonCmd -eq "py -3.10") {
-        Run-Command "Create venv using py -3.10" {
-            py -3.10 -m venv $VenvDir
-        }
+        Run-Command "Create venv using py -3.10" { py -3.10 -m venv $VenvDir }
     } else {
-        Run-Command "Create venv using python" {
-            python -m venv $VenvDir
-        }
+        Run-Command "Create venv using python" { python -m venv $VenvDir }
     }
 }
 
-Step 5 "Starting Dexcel installer..."
+Clear-Host
+
+Write-Host ""
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host " Dexcel Installer" -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
+
+Step "Checking compatible Python"
 
 $PythonCmd = Find-Python
 
 if (-not $PythonCmd) {
-    Step 10 "Compatible Python not found. Installing Python 3.12..."
+    Step "Installing Python 3.12"
 
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Run-Command "Install Python 3.12 using winget" {
@@ -196,9 +186,9 @@ if (-not $PythonCmd) {
     }
 }
 
-Step 20 "Using Python: $PythonCmd"
+Write-Host "Using Python: $PythonCmd" -ForegroundColor Green
 
-Step 25 "Resetting old virtual environment if incompatible..."
+Step "Checking old virtual environment"
 
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 
@@ -206,12 +196,12 @@ if (Test-Path $VenvPython) {
     & $VenvPython -c "import sys; exit(0 if sys.version_info >= (3,10) and sys.version_info < (3,13) else 1)" 2>$null
 
     if ($LASTEXITCODE -ne 0) {
-        Step 28 "Removing incompatible old virtual environment..."
+        Write-Host "Removing incompatible old virtual environment..." -ForegroundColor Yellow
         Remove-Item -Recurse -Force $VenvDir
     }
 }
 
-Step 30 "Downloading Dexcel application files..."
+Step "Downloading Dexcel files"
 
 try {
     Invoke-WebRequest `
@@ -227,28 +217,29 @@ try {
 
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 
+Step "Preparing Python environment"
+
 if (-not (Test-Path $VenvPython)) {
-    Step 40 "Creating isolated Python environment..."
     Create-Venv $PythonCmd
 
     if (-not (Test-Path $VenvPython)) {
         Fail "Failed to create virtual environment."
     }
 } else {
-    Step 40 "Existing compatible Dexcel environment found. Updating it..."
+    Write-Host "Existing compatible environment found." -ForegroundColor Green
 }
 
-Step 50 "Upgrading pip, setuptools, and wheel..."
+Step "Upgrading installer tools"
 
 try {
     Run-Command "Upgrade pip setuptools wheel" {
         & $VenvPython -m pip install --upgrade pip setuptools wheel
     }
 } catch {
-    Fail "Failed to upgrade pip. See log for details."
+    Fail "Failed to upgrade pip."
 }
 
-Step 60 "Installing Dexcel dependencies..."
+Step "Installing Dexcel dependencies"
 
 try {
     Run-Command "Install requirements.txt" {
@@ -256,23 +247,19 @@ try {
     }
 } catch {
     Write-Host ""
-    Write-Host "Dependency installation failed." -ForegroundColor Red
-    Write-Host "Check this log:"
-    Write-Host "  $InstallLog"
-    Write-Host ""
-    Write-Host "Manual debug command:"
-    Write-Host "  `"$VenvPython`" -m pip install -r `"$AppDir\requirements.txt`""
+    Write-Host "Manual debug command:" -ForegroundColor Yellow
+    Write-Host "`"$VenvPython`" -m pip install -r `"$AppDir\requirements.txt`""
 
     Fail "Failed to install dependencies."
 }
 
-Step 75 "Verifying core packages..."
+Step "Verifying core packages"
 
 Run-Command "Verify core packages" {
     & $VenvPython -c "import pandas, openpyxl"
 }
 
-Step 85 "Checking database drivers..."
+Step "Checking database drivers"
 
 $Drivers = @{
     "MySQL/MariaDB" = "pymysql"
@@ -296,7 +283,7 @@ foreach ($Label in $Drivers.Keys) {
     }
 }
 
-Step 92 "Creating dexcel command..."
+Step "Creating dexcel command"
 
 $DbToExcelPath = Join-Path $AppDir "db_to_excel.py"
 
@@ -319,27 +306,38 @@ if ($UserPath -notlike "*$BinDir*") {
     $NeedNewTerminal = $false
 }
 
-Step 100 "Installation complete."
-Write-Progress -Activity "Installing Dexcel" -Completed
+Write-Progress -Activity "Dexcel Installer" -Completed
 
 Write-Host ""
-Write-Host "Dexcel installed successfully." -ForegroundColor Green
+Write-Host "==========================================" -ForegroundColor Green
+Write-Host " Dexcel installed successfully" -ForegroundColor Green
+Write-Host "==========================================" -ForegroundColor Green
+Write-Host "Install path : $InstallDir"
+Write-Host "Command      : dexcel"
+Write-Host "Log file     : $InstallLog"
 
 if ($Working.Count -gt 0) {
-    Write-Host "Working database drivers: $($Working -join ', ')"
+    Write-Host ""
+    Write-Host "Working database drivers:" -ForegroundColor Green
+    foreach ($Item in $Working) {
+        Write-Host "  [OK] $Item"
+    }
 }
 
 if ($Broken.Count -gt 0) {
-    Write-Host "Unavailable database drivers: $($Broken -join ', ')" -ForegroundColor Yellow
-    Write-Host "See log: $InstallLog"
+    Write-Host ""
+    Write-Host "Unavailable database drivers:" -ForegroundColor Yellow
+    foreach ($Item in $Broken) {
+        Write-Host "  [--] $Item"
+    }
 }
 
 Write-Host ""
 
 if ($NeedNewTerminal) {
-    Write-Host "Open a NEW terminal, then run:"
+    Write-Host "Open a NEW terminal, then run:" -ForegroundColor Yellow
     Write-Host "  dexcel"
 } else {
-    Write-Host "Run:"
+    Write-Host "Run:" -ForegroundColor Yellow
     Write-Host "  dexcel"
 }
