@@ -31,28 +31,30 @@ function Write-Log {
     Add-Content -Path $InstallLog -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message"
 }
 
-$script:CurrentStep = 0
-$script:TotalSteps = 8
+$script:SpinnerIndex = 0
+$script:ProgressWidth = 28
 
 function Step {
-    param([string]$Message)
-
-    $script:CurrentStep++
-
-    $Percent = [math]::Round(
-        ($script:CurrentStep / $script:TotalSteps) * 100
+    param(
+        [int]$Percent,
+        [string]$Message
     )
+
+    $Spinner = @("⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏")
+    $Spin = $Spinner[$script:SpinnerIndex % $Spinner.Count]
+    $script:SpinnerIndex++
+
+    $Completed = [math]::Floor(($Percent / 100) * $script:ProgressWidth)
+    $Remaining = $script:ProgressWidth - $Completed
+
+    $Bar = ("█" * $Completed) + ("░" * $Remaining)
 
     Write-Progress `
         -Activity "Dexcel Installer" `
-        -Status $Message `
+        -Status "$Percent% - $Message" `
         -PercentComplete $Percent
 
-    Write-Host ""
-    Write-Host "=================================================="
-    Write-Host "[Step $($script:CurrentStep)/$($script:TotalSteps)] $Message"
-    Write-Host "=================================================="
-
+    Write-Host "$Spin [$Bar] $Percent%  $Message"
     Write-Log $Message
 }
 
